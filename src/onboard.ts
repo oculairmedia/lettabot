@@ -462,7 +462,8 @@ async function stepModel(config: OnboardConfig, env: Record<string, string>): Pr
   }
   
   spinner.start('Fetching models...');
-  const modelOptions = await buildModelOptions({ billingTier, isSelfHosted });
+  const apiKey = config.apiKey || env.LETTA_API_KEY || process.env.LETTA_API_KEY;
+  const modelOptions = await buildModelOptions({ billingTier, isSelfHosted, apiKey });
   spinner.stop('Models loaded');
   
   // Show appropriate message for free tier

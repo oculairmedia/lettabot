@@ -73,17 +73,50 @@ export function getDefaultModelForTier(billingTier?: string | null): string {
   return defaultModel?.handle ?? models[0]?.handle ?? 'anthropic/claude-sonnet-4-5-20250929';
 }
 
+interface ByokModel {
+  handle: string;
+  name: string;
+  display_name?: string;
+  provider_name: string;
+  provider_type: string;
+}
+
+/**
+ * Fetch BYOK models from Letta API
+ */
+async function fetchByokModels(apiKey?: string): Promise<ByokModel[]> {
+  try {
+    const key = apiKey || process.env.LETTA_API_KEY;
+    if (!key) return [];
+    
+    const response = await fetch('https://api.letta.com/v1/models?provider_category=byok', {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+      },
+    });
+    
+    if (!response.ok) return [];
+    
+    const models = await response.json() as ByokModel[];
+    return models;
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Build model selection options based on billing tier
  * Returns array ready for @clack/prompts select()
  * 
- * For free users: Show free models first, then all BYOK models
+ * For free users: Show free models first, then BYOK models from API
  * For paid users: Show featured models first, then all models
  * For self-hosted: Fetch models from server
  */
 export async function buildModelOptions(options?: {
   billingTier?: string | null;
   isSelfHosted?: boolean;
+  apiKey?: string;
 }): Promise<Array<{ value: string; label: string; hint: string }>> {
   const billingTier = options?.billingTier;
   const isSelfHosted = options?.isSelfHosted;
@@ -105,20 +138,21 @@ export async function buildModelOptions(options?: {
       hint: `🆓 Free - ${m.description}`,
     })));
     
-    // Show all BYOK models
-    result.push({
-      value: '__byok_header__',
-      label: '── BYOK Models ──',
-      hint: 'Requires provider API key',
-    });
-    
-    // Show all non-free models as BYOK options
-    const byokModels = models.filter(m => !m.free);
-    result.push(...byokModels.map(m => ({
-      value: m.handle,
-      label: m.label,
-      hint: `🔑 ${m.description}`,
-    })));
+    // Fetch BYOK models from API
+    const byokModels = await fetchByokModels(options?.apiKey);
+    if (byokModels.length > 0) {
+      result.push({
+        value: '__byok_header__',
+        label: '── Your Connected Providers ──',
+        hint: 'Models from your API keys',
+      });
+      
+      result.push(...byokModels.map(m => ({
+        value: m.handle,
+        label: m.display_name || m.name,
+        hint: `🔑 ${m.provider_name}`,
+      })));
+    }
   } else {
     // Paid tier: Show featured models first
     const featured = models.filter(m => m.isFeatured);
