@@ -77,6 +77,7 @@ export interface WhatsAppConfig {
 export interface SignalConfig {
   enabled: boolean;
   phone?: string;
+  selfChat?: boolean;
   dmPolicy?: 'pairing' | 'allowlist' | 'open';
   allowedUsers?: string[];
 }

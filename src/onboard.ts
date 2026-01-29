@@ -35,7 +35,7 @@ interface OnboardConfig {
   telegram: { enabled: boolean; token?: string; dmPolicy?: 'pairing' | 'allowlist' | 'open'; allowedUsers?: string[] };
   slack: { enabled: boolean; appToken?: string; botToken?: string; allowedUsers?: string[] };
   whatsapp: { enabled: boolean; selfChat?: boolean; dmPolicy?: 'pairing' | 'allowlist' | 'open'; allowedUsers?: string[] };
-  signal: { enabled: boolean; phone?: string; dmPolicy?: 'pairing' | 'allowlist' | 'open'; allowedUsers?: string[] };
+  signal: { enabled: boolean; phone?: string; selfChat?: boolean; dmPolicy?: 'pairing' | 'allowlist' | 'open'; allowedUsers?: string[] };
   discord: { enabled: boolean; token?: string; dmPolicy?: 'pairing' | 'allowlist' | 'open'; allowedUsers?: string[] };
   gmail: { enabled: boolean; account?: string };
   
@@ -735,11 +735,15 @@ async function stepChannels(config: OnboardConfig, env: Record<string, string>):
       'WhatsApp'
     );
     
-    const selfChat = await p.confirm({
-      message: 'WhatsApp: Self-chat mode? (Message Yourself)',
-      initialValue: config.whatsapp.selfChat ?? false,
+    const selfChat = await p.select({
+      message: 'WhatsApp: Whose number is this?',
+      options: [
+        { value: 'dedicated', label: 'Dedicated bot number', hint: 'Responds to all incoming messages' },
+        { value: 'personal', label: 'My personal number', hint: 'Only responds to "Message Yourself" chat' },
+      ],
+      initialValue: config.whatsapp.selfChat ? 'personal' : 'dedicated',
     });
-    if (!p.isCancel(selfChat)) config.whatsapp.selfChat = selfChat;
+    if (!p.isCancel(selfChat)) config.whatsapp.selfChat = selfChat === 'personal';
     
     // Access control (important since WhatsApp has full account access)
     const dmPolicy = await p.select({
@@ -784,6 +788,16 @@ async function stepChannels(config: OnboardConfig, env: Record<string, string>):
       initialValue: config.signal.phone || '',
     });
     if (!p.isCancel(phone) && phone) config.signal.phone = phone;
+    
+    const selfChat = await p.select({
+      message: 'Signal: Whose number is this?',
+      options: [
+        { value: 'dedicated', label: 'Dedicated bot number', hint: 'Responds to all incoming messages' },
+        { value: 'personal', label: 'My personal number', hint: 'Only responds to "Note to Self" chat' },
+      ],
+      initialValue: config.signal.selfChat ? 'personal' : 'dedicated',
+    });
+    if (!p.isCancel(selfChat)) config.signal.selfChat = selfChat === 'personal';
     
     // Access control
     const dmPolicy = await p.select({
@@ -876,7 +890,7 @@ function showSummary(config: OnboardConfig): void {
   if (config.slack.enabled) channels.push('Slack');
   if (config.discord.enabled) channels.push('Discord');
   if (config.whatsapp.enabled) channels.push(config.whatsapp.selfChat ? 'WhatsApp (self)' : 'WhatsApp');
-  if (config.signal.enabled) channels.push('Signal');
+  if (config.signal.enabled) channels.push(config.signal.selfChat ? 'Signal (self)' : 'Signal');
   lines.push(`Channels:  ${channels.length > 0 ? channels.join(', ') : 'None'}`);
   
   // Features
@@ -1000,6 +1014,7 @@ export async function onboard(): Promise<void> {
     signal: { 
       enabled: existingConfig.channels.signal?.enabled || false,
       phone: existingConfig.channels.signal?.phone,
+      selfChat: existingConfig.channels.signal?.selfChat,
       dmPolicy: existingConfig.channels.signal?.dmPolicy,
     },
     gmail: { enabled: false },
@@ -1103,6 +1118,9 @@ export async function onboard(): Promise<void> {
   
   if (config.signal.enabled && config.signal.phone) {
     env.SIGNAL_PHONE_NUMBER = config.signal.phone;
+    // Signal selfChat defaults to true, so only set env if explicitly false (dedicated number)
+    if (config.signal.selfChat === false) env.SIGNAL_SELF_CHAT_MODE = 'false';
+    else delete env.SIGNAL_SELF_CHAT_MODE;
     if (config.signal.dmPolicy) env.SIGNAL_DM_POLICY = config.signal.dmPolicy;
     if (config.signal.allowedUsers?.length) {
       env.SIGNAL_ALLOWED_USERS = config.signal.allowedUsers.join(',');
@@ -1111,6 +1129,7 @@ export async function onboard(): Promise<void> {
     }
   } else {
     delete env.SIGNAL_PHONE_NUMBER;
+    delete env.SIGNAL_SELF_CHAT_MODE;
     delete env.SIGNAL_DM_POLICY;
     delete env.SIGNAL_ALLOWED_USERS;
   }
@@ -1203,6 +1222,7 @@ export async function onboard(): Promise<void> {
         signal: {
           enabled: true,
           phone: config.signal.phone,
+          selfChat: config.signal.selfChat,
           dmPolicy: config.signal.dmPolicy,
           allowedUsers: config.signal.allowedUsers,
         }
