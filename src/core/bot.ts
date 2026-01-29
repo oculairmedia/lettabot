@@ -240,8 +240,10 @@ export class LettaBot {
             // Save agent ID and attach ignore tool (only on first message)
             if (session.agentId && session.agentId !== this.store.agentId) {
               const isNewAgent = !this.store.agentId;
-              this.store.agentId = session.agentId;
-              console.log('Saved agent ID:', session.agentId);
+              // Save agent ID along with the current server URL
+              const currentBaseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.com';
+              this.store.setAgent(session.agentId, currentBaseUrl);
+              console.log('Saved agent ID:', session.agentId, 'on server:', currentBaseUrl);
               
               // Setup new agents: set name, install skills
               if (isNewAgent) {
@@ -327,8 +329,9 @@ export class LettaBot {
         }
         
         if (msg.type === 'result') {
-          if (session.agentId) {
-            this.store.agentId = session.agentId;
+          if (session.agentId && session.agentId !== this.store.agentId) {
+            const currentBaseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.com';
+            this.store.setAgent(session.agentId, currentBaseUrl);
           }
           break;
         }
