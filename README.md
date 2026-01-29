@@ -90,6 +90,27 @@ lettabot skills
 lettabot skills status
 ```
 
+### Home Assistant
+
+Control your smart home with LettaBot:
+
+```bash
+# 1. Install the skill from ClawdHub
+npx clawdhub@latest install homeassistant
+
+# 2. Enable the skill
+lettabot skills sync
+# Select "homeassistant" from the list
+
+# 3. Configure credentials (see skill docs for details)
+# You'll need: HA URL + Long-Lived Access Token
+```
+
+Then ask your bot things like:
+- "Turn off the living room lights"
+- "What's the temperature in the bedroom?"
+- "Set the thermostat to 72"
+
 ## CLI Commands
 
 | Command | Description |
