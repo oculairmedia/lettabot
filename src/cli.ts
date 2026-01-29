@@ -8,6 +8,7 @@
  *   lettabot configure  - Configure settings
  */
 
+import 'dotenv/config';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -19,6 +20,9 @@ const subCommand = args[1];
 
 const ENV_PATH = resolve(process.cwd(), '.env');
 const ENV_EXAMPLE_PATH = resolve(process.cwd(), '.env.example');
+
+// Check if value is a placeholder
+const isPlaceholder = (val?: string) => !val || /^(your_|sk-\.\.\.|placeholder|example)/i.test(val);
 
 // Simple prompt helper
 function prompt(question: string): Promise<string> {
@@ -74,37 +78,58 @@ function saveEnv(env: Record<string, string>): void {
 import { onboard } from './onboard.js';
 
 async function configure() {
-  console.log(`
-╔═══════════════════════════════════════════════════════╗
-║               LettaBot Configuration                  ║
-╚═══════════════════════════════════════════════════════╝
-`);
+  const p = await import('@clack/prompts');
+  
+  p.intro('🤖 LettaBot Configuration');
 
   const env = loadEnv();
   
-  console.log('Current configuration:\n');
-  console.log(`  LETTA_API_KEY:         ${env.LETTA_API_KEY ? '✓ Set' : '✗ Not set'}`);
-  console.log(`  TELEGRAM_BOT_TOKEN:    ${env.TELEGRAM_BOT_TOKEN ? '✓ Set' : '✗ Not set'}`);
-  console.log(`  SLACK_BOT_TOKEN:       ${env.SLACK_BOT_TOKEN ? '✓ Set' : '✗ Not set'}`);
-  console.log(`  SLACK_APP_TOKEN:       ${env.SLACK_APP_TOKEN ? '✓ Set' : '✗ Not set'}`);
-  console.log(`  HEARTBEAT_INTERVAL_MIN: ${env.HEARTBEAT_INTERVAL_MIN || 'Not set'}`);
-  console.log(`  CRON_ENABLED:          ${env.CRON_ENABLED || 'false'}`);
-  console.log(`  WORKING_DIR:           ${env.WORKING_DIR || '/tmp/lettabot'}`);
-  console.log(`  AGENT_NAME:            ${env.AGENT_NAME || 'LettaBot'}`);
-  console.log(`  MODEL:                 ${env.MODEL || '(default)'}`);
+  // Check both .env file and shell environment, filtering placeholders
+  const checkVar = (key: string) => {
+    const fileValue = env[key];
+    const envValue = process.env[key];
+    const value = fileValue || envValue;
+    return isPlaceholder(value) ? undefined : value;
+  };
   
-  console.log('\n\nWhat would you like to configure?\n');
-  console.log('  1. Letta API Key');
-  console.log('  2. Telegram');
-  console.log('  3. Slack');
-  console.log('  4. Heartbeat');
-  console.log('  5. Cron');
-  console.log('  6. Working Directory');
-  console.log('  7. Agent Name & Model');
-  console.log('  8. Edit .env directly');
-  console.log('  9. Exit\n');
+  const configRows = [
+    ['LETTA_API_KEY', checkVar('LETTA_API_KEY') ? '✓ Set' : '✗ Not set'],
+    ['TELEGRAM_BOT_TOKEN', checkVar('TELEGRAM_BOT_TOKEN') ? '✓ Set' : '✗ Not set'],
+    ['SLACK_BOT_TOKEN', checkVar('SLACK_BOT_TOKEN') ? '✓ Set' : '✗ Not set'],
+    ['SLACK_APP_TOKEN', checkVar('SLACK_APP_TOKEN') ? '✓ Set' : '✗ Not set'],
+    ['HEARTBEAT_INTERVAL_MIN', checkVar('HEARTBEAT_INTERVAL_MIN') || 'Not set'],
+    ['CRON_ENABLED', checkVar('CRON_ENABLED') || 'false'],
+    ['WORKING_DIR', checkVar('WORKING_DIR') || '/tmp/lettabot'],
+    ['AGENT_NAME', checkVar('AGENT_NAME') || 'LettaBot'],
+    ['MODEL', checkVar('MODEL') || '(default)'],
+  ];
   
-  const choice = await prompt('Enter choice (1-9): ');
+  const maxKeyLength = Math.max(...configRows.map(([key]) => key.length));
+  const summary = configRows
+    .map(([key, value]) => `${(key + ':').padEnd(maxKeyLength + 1)} ${value}`)
+    .join('\n');
+  
+  p.note(summary, 'Current Configuration');
+  
+  const choice = await p.select({
+    message: 'What would you like to configure?',
+    options: [
+      { value: '1', label: 'Letta API Key', hint: '' },
+      { value: '2', label: 'Telegram', hint: '' },
+      { value: '3', label: 'Slack', hint: '' },
+      { value: '4', label: 'Heartbeat', hint: '' },
+      { value: '5', label: 'Cron', hint: '' },
+      { value: '6', label: 'Working Directory', hint: '' },
+      { value: '7', label: 'Agent Name & Model', hint: '' },
+      { value: '8', label: 'Edit .env directly', hint: '' },
+      { value: '9', label: 'Exit', hint: '' },
+    ],
+  });
+  
+  if (p.isCancel(choice)) {
+    p.cancel('Configuration cancelled');
+    return;
+  }
   
   switch (choice) {
     case '1':
@@ -139,55 +164,40 @@ async function configure() {
       console.log('✓ Saved');
       break;
     case '7': {
-      const name = await prompt(`Agent name (current: ${env.AGENT_NAME || 'LettaBot'}): `);
-      if (name) env.AGENT_NAME = name;
-      
-      // Model selection using live API data
       const p = await import('@clack/prompts');
-      const { listModels } = await import('./tools/letta-api.js');
+      const { buildModelOptions, handleModelSelection } = await import('./utils/model-selection.js');
+      
+      const currentName = env.AGENT_NAME || 'LettaBot';
+      const name = await p.text({
+        message: 'Agent name',
+        placeholder: currentName,
+        initialValue: currentName,
+      });
+      if (!p.isCancel(name) && name) env.AGENT_NAME = name;
+      
+      const currentModel = env.MODEL || 'default';
+      p.log.info(`Current model: ${currentModel}\n`);
       
       const spinner = p.spinner();
       spinner.start('Fetching available models...');
-      const baseModels = await listModels({ providerCategory: 'base' });
-      spinner.stop(`Found ${baseModels.length} models`);
-      
-      const tierLabels: Record<string, string> = {
-        'free': '🆓',
-        'premium': '⭐',
-        'per-inference': '💰',
-      };
-      
-      const modelOptions = baseModels
-        .sort((a, b) => (a.display_name || a.name).localeCompare(b.display_name || b.name))
-        .map(m => ({
-          value: m.handle,
-          label: m.display_name || m.name,
-          hint: tierLabels[m.tier || 'free'] || '',
-        }));
-      
-      const currentModel = env.MODEL || 'default';
-      console.log(`\nCurrent model: ${currentModel}\n`);
+      const modelOptions = await buildModelOptions();
+      spinner.stop('Models loaded');
       
       const modelChoice = await p.select({
         message: 'Select model',
-        options: [
-          ...modelOptions,
-          { value: '__custom__', label: 'Custom', hint: 'Enter a model handle manually' },
-          { value: '__keep__', label: 'Keep current', hint: currentModel },
-        ],
+        options: modelOptions,
+        maxItems: 10,
       });
       
-      if (!p.isCancel(modelChoice) && modelChoice !== '__keep__') {
-        if (modelChoice === '__custom__') {
-          const customModel = await prompt('Enter model handle: ');
-          if (customModel) env.MODEL = customModel;
-        } else if (modelChoice) {
-          env.MODEL = modelChoice as string;
+      if (!p.isCancel(modelChoice)) {
+        const selectedModel = await handleModelSelection(modelChoice, p.text);
+        if (selectedModel) {
+          env.MODEL = selectedModel;
         }
       }
       
       saveEnv(env);
-      console.log('✓ Saved');
+      p.log.success('Saved');
       break;
     }
     case '8':
@@ -195,7 +205,7 @@ async function configure() {
       spawnSync(editor, [ENV_PATH], { stdio: 'inherit' });
       break;
     case '9':
-      break;
+      return;
     default:
       console.log('Invalid choice');
   }

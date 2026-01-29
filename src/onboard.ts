@@ -337,48 +337,23 @@ async function stepModel(config: OnboardConfig, env: Record<string, string>): Pr
   // Only for new agents
   if (config.agentChoice !== 'new') return;
   
-  const { listModels } = await import('./tools/letta-api.js');
+  const { buildModelOptions, handleModelSelection } = await import('./utils/model-selection.js');
   
   const spinner = p.spinner();
   spinner.start('Fetching models...');
-  const baseModels = await listModels({ providerCategory: 'base' });
-  spinner.stop(`Found ${baseModels.length}`);
-  
-  const tierLabels: Record<string, string> = {
-    'free': '🆓',
-    'premium': '⭐',
-    'per-inference': '💰',
-  };
-  
-  const modelOptions = baseModels
-    .sort((a, b) => {
-      const tierOrder = ['free', 'premium', 'per-inference'];
-      return tierOrder.indexOf(a.tier || 'free') - tierOrder.indexOf(b.tier || 'free');
-    })
-    .slice(0, 15) // Limit to avoid overwhelming
-    .map(m => ({
-      value: m.handle,
-      label: m.display_name || m.name,
-      hint: tierLabels[m.tier || 'free'] || '',
-    }));
+  const modelOptions = await buildModelOptions();
+  spinner.stop('Models loaded');
   
   const modelChoice = await p.select({
-    message: 'Model',
-    options: [
-      ...modelOptions,
-      { value: '__custom__', label: 'Custom', hint: 'Enter handle' },
-    ],
+    message: 'Select model',
+    options: modelOptions,
+    maxItems: 10,
   });
   if (p.isCancel(modelChoice)) { p.cancel('Setup cancelled'); process.exit(0); }
   
-  if (modelChoice === '__custom__') {
-    const custom = await p.text({
-      message: 'Model handle',
-      placeholder: 'anthropic/claude-sonnet-4-5-20250929',
-    });
-    if (!p.isCancel(custom) && custom) config.model = custom;
-  } else {
-    config.model = modelChoice as string;
+  const selectedModel = await handleModelSelection(modelChoice, p.text);
+  if (selectedModel) {
+    config.model = selectedModel;
   }
 }
 
