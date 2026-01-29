@@ -19,7 +19,7 @@ Your personal AI assistant that remembers everything across **Telegram, Slack, W
 ### Prerequisites
 
 - Node.js 18+
-- A Letta API key from [app.letta.com](https://app.letta.com)
+- A Letta API key from [app.letta.com](https://app.letta.com) (or [self-hosted](https://docs.letta.com/guides/docker/) Letta server)
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 
 ### Install
@@ -37,6 +37,17 @@ npm run build
 npm link
 ```
 
+#### Optional: self-hosted docker server 
+You can use `lettabot` with a self-hosted Letta server with: 
+```
+docker run \
+  -v ~/.letta/.persist/pgdata:/var/lib/postgresql/data \
+  -p 8283:8283 \
+  -e OPENAI_API_KEY="your_openai_api_key" \
+  letta/letta:latest
+```
+See the [documentation](https://docs.letta.com/guides/docker/) for more details on self-hosting and model configuration. 
+
 ### Setup
 
 Run the interactive onboarding wizard:
@@ -46,7 +57,7 @@ lettabot onboard
 ```
 
 This will guide you through:
-1. Setting up your Letta API key (or OAuth login)
+1. Setting up your Letta API key (or self-hosted URL) 
 2. Configuring Telegram (and optionally Slack, WhatsApp, Signal)
 3. Enabling heartbeat and scheduled tasks
 
@@ -101,8 +112,10 @@ At least one channel is required. Telegram is the easiest to start with.
 ### Environment Variables (.env)
 
 ```bash
-# Required: Letta API Key
+# if using the Letta API
 LETTA_API_KEY=your_letta_api_key
+# if using the self-hosted Docker image
+LETTA_BASE_URL=http://localhost:8283
 
 # Telegram (easiest to start)
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
