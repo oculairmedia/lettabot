@@ -20,6 +20,7 @@ export class LettaBot {
   private config: BotConfig;
   private channels: Map<string, ChannelAdapter> = new Map();
   private messageQueue: Array<{ msg: InboundMessage; adapter: ChannelAdapter }> = [];
+  private lastUserMessageTime: Date | null = null;
   
   // Callback to trigger heartbeat (set by main.ts)
   public onTriggerHeartbeat?: () => Promise<void>;
@@ -151,6 +152,8 @@ export class LettaBot {
    * Process a single message
    */
   private async processMessage(msg: InboundMessage, adapter: ChannelAdapter): Promise<void> {
+    // Track when user last sent a message (for heartbeat skip logic)
+    this.lastUserMessageTime = new Date();
     
     // Track last message target for heartbeat delivery
     this.store.lastMessageTarget = {
@@ -429,5 +432,12 @@ export class LettaBot {
    */
   getLastMessageTarget(): { channel: string; chatId: string } | null {
     return this.store.lastMessageTarget || null;
+  }
+  
+  /**
+   * Get the time of the last user message (for heartbeat skip logic)
+   */
+  getLastUserMessageTime(): Date | null {
+    return this.lastUserMessageTime;
   }
 }

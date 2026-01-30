@@ -178,7 +178,10 @@ Ask the bot owner to approve with:
             return;
           }
           if (command === 'heartbeat') {
-            await this.onCommand('heartbeat');
+            const result = await this.onCommand('heartbeat');
+            if (result) {
+              await message.channel.send(result);
+            }
             return;
           }
         }

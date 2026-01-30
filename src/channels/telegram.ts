@@ -138,11 +138,10 @@ export class TelegramAdapter implements ChannelAdapter {
       }
     });
     
-    // Handle /heartbeat (silent - no reply)
+    // Handle /heartbeat - trigger heartbeat manually (silent - no reply)
     this.bot.command('heartbeat', async (ctx) => {
       if (this.onCommand) {
         await this.onCommand('heartbeat');
-        // No reply - heartbeat runs silently
       }
     });
     
