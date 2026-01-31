@@ -52,7 +52,7 @@ See the [documentation](https://docs.letta.com/guides/docker/) for more details 
 
 **Option 1: AI-Assisted Setup (Recommended)**
 
-Paste this into Letta Code, Claude Code, Codex CLI, or any AI coding assistant:
+Paste this into Letta Code, Claude Code, Cursor, or any AI coding assistant:
 
 ```
 Clone https://github.com/letta-ai/lettabot, read the SKILL.md
@@ -63,7 +63,7 @@ You'll need:
 - A Letta API key from [app.letta.com](https://app.letta.com) (or a [Letta Docker server](https://docs.letta.com/guides/docker/))
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 
-The AI will handle the rest: cloning, installing dependencies, reading setup docs, and configuring your bot.
+The AI will handle cloning, installing, and configuration autonomously.
 
 **Option 2: Interactive Wizard**
 

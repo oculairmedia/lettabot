@@ -19,14 +19,11 @@ npm install
 npm run build
 npm link
 
-# 2. Configure via environment variables
+# 2. Configure required variables
 export LETTA_API_KEY="letta_..."        # From app.letta.com
-export LETTA_BASE_URL="https://api.letta.com"  # Or self-hosted
-export LETTA_AGENT_ID="agent-..."       # Optional: use existing agent
 
 # 3. Configure channel (example: Telegram)
 export TELEGRAM_BOT_TOKEN="123456:ABC-DEF..."  # From @BotFather
-export TELEGRAM_DM_POLICY="pairing"     # Optional: pairing | allowlist | open
 
 # 4. Run non-interactive setup
 lettabot onboard --non-interactive
@@ -34,6 +31,16 @@ lettabot onboard --non-interactive
 # 5. Start the bot
 lettabot server
 ```
+
+**Safe defaults used if not set:**
+- `LETTA_BASE_URL`: `https://api.letta.com`
+- `LETTA_AGENT_NAME`: `"lettabot"`
+- `LETTA_MODEL`: `"claude-sonnet-4"`
+- `*_DM_POLICY`: `"pairing"` (requires approval before messaging)
+- `WHATSAPP_SELF_CHAT_MODE`: `true` (only "Message Yourself" chat)
+- `SIGNAL_SELF_CHAT_MODE`: `true` (only "Note to Self")
+
+The setup will show which defaults are being used and validate safety-critical settings.
 
 ## Interactive Setup
 
@@ -50,72 +57,83 @@ The wizard will guide you through:
 
 ## Environment Variables
 
-### Required
+### Authentication
 
-| Variable | Description |
-|----------|-------------|
-| `LETTA_API_KEY` | API key from app.letta.com (or skip for OAuth) |
-| `LETTA_BASE_URL` | API endpoint (default: https://api.letta.com) |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LETTA_API_KEY` | API key from app.letta.com | Required (unless self-hosted) |
+| `LETTA_BASE_URL` | API endpoint | `https://api.letta.com` |
 
 ### Agent Selection
 
-| Variable | Description |
-|----------|-------------|
-| `LETTA_AGENT_ID` | Use existing agent (skip agent creation) |
-| `LETTA_AGENT_NAME` | Name for new agent (default: "lettabot") |
-| `LETTA_MODEL` | Model for new agent (default: "claude-sonnet-4") |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LETTA_AGENT_ID` | Use existing agent (skip agent creation) | Creates new agent |
+| `LETTA_AGENT_NAME` | Name for new agent | `"lettabot"` |
+| `LETTA_MODEL` | Model for new agent | `"claude-sonnet-4"` |
 
 ### Telegram
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | ✅ |
-| `TELEGRAM_DM_POLICY` | Access control: `pairing` \| `allowlist` \| `open` | ❌ (default: pairing) |
-| `TELEGRAM_ALLOWED_USERS` | Comma-separated user IDs (if dmPolicy=allowlist) | ❌ |
+| Variable | Description | Required | Default |
+|----------|-------------|----------|---------|
+| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | ✅ | - |
+| `TELEGRAM_DM_POLICY` | Access control: `pairing` \| `allowlist` \| `open` | ❌ | `pairing` |
+| `TELEGRAM_ALLOWED_USERS` | Comma-separated user IDs (if dmPolicy=allowlist) | ❌ | - |
 
 ### Slack (Socket Mode)
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `SLACK_BOT_TOKEN` | Bot User OAuth Token (xoxb-...) | ✅ |
-| `SLACK_APP_TOKEN` | App-Level Token (xapp-...) for Socket Mode | ✅ |
-| `SLACK_APP_NAME` | Custom app name (default: LETTA_AGENT_NAME or "LettaBot") | ❌ |
-| `SLACK_DM_POLICY` | Access control: `pairing` \| `allowlist` \| `open` | ❌ (default: pairing) |
-| `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs (if dmPolicy=allowlist) | ❌ |
+| Variable | Description | Required | Default |
+|----------|-------------|----------|---------|
+| `SLACK_BOT_TOKEN` | Bot User OAuth Token (xoxb-...) | ✅ | - |
+| `SLACK_APP_TOKEN` | App-Level Token (xapp-...) for Socket Mode | ✅ | - |
+| `SLACK_APP_NAME` | Custom app name | ❌ | `LETTA_AGENT_NAME` or `"LettaBot"` |
+| `SLACK_DM_POLICY` | Access control: `pairing` \| `allowlist` \| `open` | ❌ | `pairing` |
+| `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs (if dmPolicy=allowlist) | ❌ | - |
 
 **Setup Slack app:** See [Slack Setup Wizard](./src/setup/slack-wizard.ts) or run `lettabot onboard` for guided setup.
 
 ### Discord
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `DISCORD_BOT_TOKEN` | Bot token from discord.com/developers/applications | ✅ |
-| `DISCORD_DM_POLICY` | Access control: `pairing` \| `allowlist` \| `open` | ❌ (default: pairing) |
-| `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs (if dmPolicy=allowlist) | ❌ |
+| Variable | Description | Required | Default |
+|----------|-------------|----------|---------|
+| `DISCORD_BOT_TOKEN` | Bot token from discord.com/developers/applications | ✅ | - |
+| `DISCORD_DM_POLICY` | Access control: `pairing` \| `allowlist` \| `open` | ❌ | `pairing` |
+| `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs (if dmPolicy=allowlist) | ❌ | - |
 
 **Setup Discord bot:** See [docs/discord-setup.md](./docs/discord-setup.md)
 
 ### WhatsApp
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `WHATSAPP_ENABLED` | Enable WhatsApp: `true` \| `false` | ✅ Must be explicit |
-| `WHATSAPP_SELF_CHAT` | Self-chat mode: `true` (personal number) \| `false` (dedicated bot number) | ✅ Must be explicit |
-| `WHATSAPP_DM_POLICY` | Access control: `pairing` \| `allowlist` \| `open` | ❌ (default: pairing) |
-| `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers with + (if dmPolicy=allowlist) | ❌ |
+| Variable | Description | Required | Default |
+|----------|-------------|----------|---------|
+| `WHATSAPP_ENABLED` | Enable WhatsApp: `true` \| `false` | ✅ | - |
+| `WHATSAPP_SELF_CHAT_MODE` | Self-chat mode: `true` (personal) \| `false` (dedicated) | ✅ | `true` (safe) |
+| `WHATSAPP_DM_POLICY` | Access control: `pairing` \| `allowlist` \| `open` | ❌ | `pairing` |
+| `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers with + (if dmPolicy=allowlist) | ❌ | - |
 
-**Important:** 
-- `WHATSAPP_SELF_CHAT=false` (dedicated bot number): Responds to ALL incoming messages
-- `WHATSAPP_SELF_CHAT=true` (personal number): Only responds to "Message Yourself" chat
-- QR code appears on first run - scan with WhatsApp app
+**CRITICAL - Read Before Enabling:**
+- `WHATSAPP_SELF_CHAT_MODE=true` (personal number): Only responds to "Message Yourself" chat ✅ SAFE
+- `WHATSAPP_SELF_CHAT_MODE=false` (dedicated bot number): Responds to ALL incoming messages ⚠️ USE WITH CAUTION
+- Default is `true` for safety - bot will NOT message your contacts unless you explicitly set to `false`
+
+**First-Time Setup - QR Code Warning:**
+- QR code prints to console when `lettabot server` runs for the first time
+- **DO NOT background the server** until after QR code is scanned
+- **AI agents using Letta Code or similar**: Output may be truncated! If QR code is not visible:
+  1. Tell the agent to stop the server
+  2. Run `lettabot server` yourself in a terminal
+  3. Scan the QR code when it appears
+  4. After pairing, the agent can manage the server normally
+- Alternative: Instruct agent "Run lettabot server in FOREGROUND and do NOT background it"
+- After initial pairing completes, server can be backgrounded in future runs
 
 ### Signal
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `SIGNAL_PHONE_NUMBER` | Your phone number (with +) | ✅ |
-| `SIGNAL_DM_POLICY` | Access control: `pairing` \| `allowlist` \| `open` | ❌ (default: pairing) |
-| `SIGNAL_ALLOWED_USERS` | Comma-separated phone numbers with + (if dmPolicy=allowlist) | ❌ |
+| Variable | Description | Required | Default |
+|----------|-------------|----------|---------|
+| `SIGNAL_PHONE_NUMBER` | Your phone number (with +) | ✅ | - |
+| `SIGNAL_DM_POLICY` | Access control: `pairing` \| `allowlist` \| `open` | ❌ | `pairing` |
+| `SIGNAL_ALLOWED_USERS` | Comma-separated phone numbers with + (if dmPolicy=allowlist) | ❌ | - |
 
 **Setup:** Requires Signal CLI - see [signal-cli documentation](https://github.com/AsamK/signal-cli).
 
@@ -245,18 +263,41 @@ npm install && npm run build && npm link
 # 4. Set environment variables
 export LETTA_API_KEY="letta_..."
 export TELEGRAM_BOT_TOKEN="123456:ABC-DEF..."
+# Defaults will be used for LETTA_BASE_URL, agent name, model, and DM policy
 
 # 5. Run non-interactive setup
 lettabot onboard --non-interactive
 
-# 6. Start server
-lettabot server
+# 6. Instruct user to start server
+# DON'T start server automatically - user must see output
+echo "Setup complete! Run 'lettabot server' to start the bot."
 ```
 
+**For WhatsApp (QR code required on first run):**
+```bash
+export LETTA_API_KEY="letta_..."
+export WHATSAPP_ENABLED="true"
+export WHATSAPP_SELF_CHAT_MODE="true"  # REQUIRED: true=personal number, false=dedicated bot
+lettabot onboard --non-interactive
+
+# CRITICAL: Do NOT auto-start the server!
+# Tell user: "WhatsApp setup complete. Please run 'lettabot server' in your terminal."
+# User must see QR code in console output to scan it.
+# After first pairing, server can be managed normally.
+```
+
+**Agent Instructions:**
+If an AI agent is helping with setup and WhatsApp is configured:
+1. Complete `lettabot onboard --non-interactive`
+2. **DO NOT** run `lettabot server` automatically
+3. Tell user: "Setup complete! Please run `lettabot server` in a terminal to see the WhatsApp QR code"
+4. Wait for user confirmation that QR was scanned
+5. After confirmation, server can be managed normally
+
 The agent can verify success by checking:
-- `lettabot server` output shows "Connected to Telegram"
+- `lettabot server` output shows "Connected to Telegram" (or other channel)
 - Config file exists at `~/.config/lettabot/config.yaml`
-- User can message bot on Telegram
+- User can message bot on configured channel(s)
 
 ## Self-Hosted Letta
 

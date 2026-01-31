@@ -45,7 +45,7 @@ function readConfigFromEnv(existingConfig: any): any {
     
     whatsapp: {
       enabled: process.env.WHATSAPP_ENABLED === 'true' || !!existingConfig.channels?.whatsapp?.enabled,
-      selfChat: process.env.WHATSAPP_SELF_CHAT === 'true' || !!existingConfig.channels?.whatsapp?.selfChat || false,
+      selfChat: process.env.WHATSAPP_SELF_CHAT_MODE !== 'false' && (existingConfig.channels?.whatsapp?.selfChat !== false),
       dmPolicy: process.env.WHATSAPP_DM_POLICY || existingConfig.channels?.whatsapp?.dmPolicy || 'pairing',
       allowedUsers: process.env.WHATSAPP_ALLOWED_USERS?.split(',').map(s => s.trim()) || existingConfig.channels?.whatsapp?.allowedUsers,
     },
@@ -53,6 +53,7 @@ function readConfigFromEnv(existingConfig: any): any {
     signal: {
       enabled: !!process.env.SIGNAL_PHONE_NUMBER,
       phoneNumber: process.env.SIGNAL_PHONE_NUMBER || existingConfig.channels?.signal?.phoneNumber,
+      selfChat: process.env.SIGNAL_SELF_CHAT_MODE !== 'false' && (existingConfig.channels?.signal?.selfChat !== false),
       dmPolicy: process.env.SIGNAL_DM_POLICY || existingConfig.channels?.signal?.dmPolicy || 'pairing',
       allowedUsers: process.env.SIGNAL_ALLOWED_USERS?.split(',').map(s => s.trim()) || existingConfig.channels?.signal?.allowedUsers,
     },
@@ -1304,14 +1305,96 @@ export async function onboard(options?: { nonInteractive?: boolean }): Promise<v
     
     const config = readConfigFromEnv(existingConfig);
     
+    // Show defaults being used
+    console.log('Configuration:');
+    console.log(`  Server: ${config.baseUrl}`);
+    if (!process.env.LETTA_BASE_URL) {
+      console.log('    (using default - override with LETTA_BASE_URL)');
+    }
+    
+    if (config.telegram.enabled) {
+      console.log(`  Telegram: enabled`);
+      console.log(`    DM Policy: ${config.telegram.dmPolicy}${!process.env.TELEGRAM_DM_POLICY ? ' (default)' : ''}`);
+    }
+    
+    if (config.slack.enabled) {
+      console.log(`  Slack: enabled`);
+      console.log(`    DM Policy: ${config.slack.dmPolicy}${!process.env.SLACK_DM_POLICY ? ' (default)' : ''}`);
+    }
+    
+    if (config.discord.enabled) {
+      console.log(`  Discord: enabled`);
+      console.log(`    DM Policy: ${config.discord.dmPolicy}${!process.env.DISCORD_DM_POLICY ? ' (default)' : ''}`);
+    }
+    
+    if (config.whatsapp.enabled) {
+      console.log(`  WhatsApp: enabled`);
+      console.log(`    Self-chat: ${config.whatsapp.selfChat}`);
+      console.log(`    DM Policy: ${config.whatsapp.dmPolicy}${!process.env.WHATSAPP_DM_POLICY ? ' (default)' : ''}`);
+      
+      // Check if this is first-time WhatsApp setup (no auth data exists)
+      const { existsSync } = await import('node:fs');
+      const { resolve } = await import('node:path');
+      const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+      const authPath = resolve(homeDir, '.wwebjs_auth');
+      const isFirstTime = !existsSync(authPath);
+      
+      if (isFirstTime) {
+        console.log('');
+        console.log('⚠️  CRITICAL: First-Time WhatsApp Setup');
+        console.log('   A QR code will print when you start the server.');
+        console.log('   You MUST see the QR code to scan it with your phone.');
+        console.log('');
+        console.log('   IF USING AN AI AGENT TO START THE SERVER:');
+        console.log('   - Tell the agent: "Run lettabot server in the FOREGROUND"');
+        console.log('   - OR: "Do NOT background the server process"');
+        console.log('   - The QR code output may be truncated - if you don\'t see it,');
+        console.log('     run "lettabot server" yourself in a terminal to see the full output');
+        console.log('');
+        console.log('   After first pairing, the server can be backgrounded normally.');
+      }
+    }
+    
+    if (config.signal.enabled) {
+      console.log(`  Signal: enabled`);
+      console.log(`    DM Policy: ${config.signal.dmPolicy}${!process.env.SIGNAL_DM_POLICY ? ' (default)' : ''}`);
+    }
+    
+    console.log('');
+    
     // Validate required fields
-    if (!config.baseUrl) {
-      console.error('❌ Error: LETTA_BASE_URL is required');
+    if (!config.apiKey && !config.baseUrl?.includes('localhost')) {
+      console.error('❌ Error: LETTA_API_KEY is required');
+      console.error('   Get your API key from: https://app.letta.com/settings');
+      console.error('   Then run: export LETTA_API_KEY="letta_..."');
+      console.error('');
+      console.error('   Or use self-hosted Letta:');
+      console.error('   export LETTA_BASE_URL="http://localhost:8283"');
       process.exit(1);
     }
     
-    if (!config.apiKey && !config.baseUrl?.includes('localhost')) {
-      console.error('❌ Error: LETTA_API_KEY is required (or use self-hosted with LETTA_BASE_URL)');
+    // Validate at least one channel is enabled
+    const hasChannel = config.telegram.enabled || config.slack.enabled || config.discord.enabled || config.whatsapp.enabled || config.signal.enabled;
+    if (!hasChannel) {
+      console.error('❌ Error: At least one channel must be configured');
+      console.error('');
+      console.error('   Telegram:  export TELEGRAM_BOT_TOKEN="..." (from @BotFather)');
+      console.error('   Slack:     export SLACK_BOT_TOKEN="..." and SLACK_APP_TOKEN="..."');
+      console.error('   Discord:   export DISCORD_BOT_TOKEN="..."');
+      console.error('   WhatsApp:  export WHATSAPP_ENABLED=true and WHATSAPP_SELF_CHAT_MODE=true');
+      console.error('   Signal:    export SIGNAL_PHONE_NUMBER="+1234567890"');
+      process.exit(1);
+    }
+    
+    // CRITICAL: Validate WhatsApp self-chat is explicitly set
+    if (config.whatsapp.enabled && process.env.WHATSAPP_SELF_CHAT_MODE === undefined) {
+      console.error('❌ Error: WhatsApp requires explicit WHATSAPP_SELF_CHAT_MODE for safety');
+      console.error('');
+      console.error('   For personal number (SAFE - only "Message Yourself" chat):');
+      console.error('   export WHATSAPP_SELF_CHAT_MODE=true');
+      console.error('');
+      console.error('   For dedicated bot number (UNSAFE - responds to ALL messages):');
+      console.error('   export WHATSAPP_SELF_CHAT_MODE=false');
       process.exit(1);
     }
     
