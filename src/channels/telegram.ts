@@ -249,7 +249,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const { markdownToTelegramV2 } = await import('./telegram-format.js');
     
     // Convert markdown to Telegram MarkdownV2 format
-    const formatted = markdownToTelegramV2(msg.text);
+    const formatted = await markdownToTelegramV2(msg.text);
     
     const result = await this.bot.api.sendMessage(msg.chatId, formatted, {
       parse_mode: 'MarkdownV2',
@@ -260,7 +260,7 @@ export class TelegramAdapter implements ChannelAdapter {
   
   async editMessage(chatId: string, messageId: string, text: string): Promise<void> {
     const { markdownToTelegramV2 } = await import('./telegram-format.js');
-    const formatted = markdownToTelegramV2(text);
+    const formatted = await markdownToTelegramV2(text);
     await this.bot.api.editMessageText(chatId, Number(messageId), formatted, { parse_mode: 'MarkdownV2' });
   }
   

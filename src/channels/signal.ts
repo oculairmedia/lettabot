@@ -454,6 +454,11 @@ This code expires in 1 hour.`;
       
       if (!envelope) return;
       
+      // Debug: log when we receive any message
+      if (envelope.dataMessage || envelope.syncMessage) {
+        console.log('[Signal] Received envelope:', JSON.stringify(envelope, null, 2));
+      }
+      
       // Handle incoming data messages (from others)
       const dataMessage = envelope.dataMessage;
       
@@ -500,9 +505,15 @@ This code expires in 1 hour.`;
         }
       }
       
+      // Check if we have a valid message before attachment processing
+      if (!source || !chatId) {
+        return;
+      }
+      
       // Handle voice message attachments
       const voiceAttachment = attachments?.find(a => a.contentType?.startsWith('audio/'));
-      if (voiceAttachment?.filename) {
+      if (voiceAttachment?.id) {
+        console.log(`[Signal] Voice attachment detected: ${voiceAttachment.contentType}, id: ${voiceAttachment.id}`);
         try {
           const { loadConfig } = await import('../config/index.js');
           const config = loadConfig();
@@ -514,8 +525,15 @@ This code expires in 1 hour.`;
               });
             }
           } else {
+            // Read attachment from signal-cli attachments directory
             const { readFileSync } = await import('node:fs');
-            const buffer = readFileSync(voiceAttachment.filename);
+            const { homedir } = await import('node:os');
+            const { join } = await import('node:path');
+            
+            const attachmentPath = join(homedir(), '.local/share/signal-cli/attachments', voiceAttachment.id);
+            console.log(`[Signal] Reading attachment from: ${attachmentPath}`);
+            const buffer = readFileSync(attachmentPath);
+            console.log(`[Signal] Read ${buffer.length} bytes`);
             
             const { transcribeAudio } = await import('../transcription/index.js');
             const ext = voiceAttachment.contentType?.split('/')[1] || 'ogg';
@@ -529,20 +547,26 @@ This code expires in 1 hour.`;
         }
       }
       
-      if (!messageText || !source || !chatId) {
+      // After processing attachments, check if we have any message content
+      if (!messageText) {
         return;
       }
       
       // Handle Note to Self - check selfChatMode
+      console.log(`[Signal] Processing message: chatId=${chatId}, source=${source}, selfChatMode=${this.config.selfChatMode}`);
       if (chatId === 'note-to-self') {
         if (!this.config.selfChatMode) {
           // selfChatMode disabled - ignore Note to Self messages
+          console.log('[Signal] Note to Self ignored (selfChatMode disabled)');
           return;
         }
         // selfChatMode enabled - allow the message through
+        console.log('[Signal] Note to Self allowed (selfChatMode enabled)');
       } else {
         // External message - check access control
+        console.log('[Signal] Checking access for external message');
         const access = await this.checkAccess(source);
+        console.log(`[Signal] Access result: ${access}`);
         
         if (access === 'blocked') {
           console.log(`[Signal] Blocked message from unauthorized user: ${source}`);
