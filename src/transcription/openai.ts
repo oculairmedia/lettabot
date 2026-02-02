@@ -35,11 +35,14 @@ function getModel(): string {
 export async function transcribeAudio(audioBuffer: Buffer, filename: string = 'audio.ogg'): Promise<string> {
   const client = getClient();
   
+  // Normalize filename for Whisper API (e.g., .aac -> .m4a)
+  const normalizedFilename = normalizeFilename(filename);
+  
   // Create a File object from the buffer
   // OpenAI SDK expects a File-like object
   // Convert Buffer to Uint8Array to satisfy BlobPart type
-  const file = new File([new Uint8Array(audioBuffer)], filename, { 
-    type: getMimeType(filename) 
+  const file = new File([new Uint8Array(audioBuffer)], normalizedFilename, { 
+    type: getMimeType(normalizedFilename) 
   });
   
   const response = await client.audio.transcriptions.create({
@@ -51,19 +54,49 @@ export async function transcribeAudio(audioBuffer: Buffer, filename: string = 'a
 }
 
 /**
+ * Supported formats for OpenAI Whisper API
+ */
+const SUPPORTED_FORMATS = ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm'];
+
+/**
  * Get MIME type from filename extension
  */
 function getMimeType(filename: string): string {
   const ext = filename.split('.').pop()?.toLowerCase();
   const mimeTypes: Record<string, string> = {
     'ogg': 'audio/ogg',
+    'oga': 'audio/ogg',
     'mp3': 'audio/mpeg',
     'mp4': 'audio/mp4',
     'm4a': 'audio/mp4',
+    'aac': 'audio/mp4', // AAC is the codec in m4a
     'wav': 'audio/wav',
+    'flac': 'audio/flac',
     'webm': 'audio/webm',
     'mpeg': 'audio/mpeg',
     'mpga': 'audio/mpeg',
   };
   return mimeTypes[ext || ''] || 'audio/ogg';
+}
+
+/**
+ * Normalize filename for Whisper API
+ * Converts unsupported extensions to supported equivalents
+ */
+function normalizeFilename(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  
+  // AAC is just the codec - Whisper accepts it as m4a
+  if (ext === 'aac') {
+    return filename.replace(/\.aac$/i, '.m4a');
+  }
+  
+  // Check if already supported
+  if (ext && SUPPORTED_FORMATS.includes(ext)) {
+    return filename;
+  }
+  
+  // Default fallback - try as ogg
+  console.warn(`[Transcription] Unknown format .${ext}, trying as .ogg`);
+  return filename.replace(/\.[^.]+$/, '.ogg');
 }
