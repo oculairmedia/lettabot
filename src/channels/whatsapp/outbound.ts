@@ -5,8 +5,9 @@
  * Based on OpenClaw's outbound.ts pattern.
  */
 
-import type { OutboundMessage } from "../../core/types.js";
+import type { OutboundMessage, OutboundFile } from "../../core/types.js";
 import { isLid } from "./utils.js";
+import { basename } from "node:path";
 
 /**
  * LID (Linked Identifier) mapping for message sending.
@@ -192,5 +193,67 @@ export async function sendReadReceipt(
   } catch (err) {
     // Ignore read receipt errors - not critical
     console.warn(`[WhatsApp] Failed to send read receipt for ${messageId}:`, err);
+  }
+}
+
+/**
+ * Send a file (image or document) to WhatsApp.
+ *
+ * @param sock - Baileys socket instance
+ * @param file - File to send
+ * @param lidMapper - LID mapping data
+ * @param sentMessageIds - Set to track sent messages
+ * @returns Message ID
+ */
+export async function sendWhatsAppFile(
+  sock: import("@whiskeysockets/baileys").WASocket,
+  file: OutboundFile,
+  lidMapper: LidMapper,
+  sentMessageIds: Set<string>
+): Promise<{ messageId: string }> {
+  if (!sock) {
+    throw new Error("WhatsApp not connected");
+  }
+
+  // Resolve LID to real JID
+  const targetJid = resolveSendJid(file.chatId, sock, lidMapper);
+
+  // Build payload based on file kind
+  const caption = file.caption || undefined;
+  const fileName = basename(file.filePath);
+
+  const payload =
+    file.kind === "image"
+      ? { image: { url: file.filePath }, caption }
+      : { document: { url: file.filePath }, mimetype: "application/octet-stream", caption, fileName };
+
+  try {
+    // Send file
+    const result = await sock.sendMessage(targetJid, payload);
+    const messageId = result?.key?.id || "";
+    const message = result?.message;
+
+    // Track sent message to prevent self-echo
+    if (messageId) {
+      sentMessageIds.add(messageId);
+
+      // Store in getMessage cache for retry capability
+      if (message && lidMapper.messageStore) {
+        lidMapper.messageStore.set(messageId, message);
+        setTimeout(() => {
+          lidMapper.messageStore?.delete(messageId);
+        }, 24 * 60 * 60 * 1000);
+      }
+
+      // Cleanup sent ID after 60 seconds
+      setTimeout(() => {
+        sentMessageIds.delete(messageId);
+      }, 60000);
+    }
+
+    return { messageId };
+  } catch (error) {
+    console.error("[WhatsApp] sendFile error:", error);
+    throw error;
   }
 }

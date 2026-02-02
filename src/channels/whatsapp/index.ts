@@ -18,7 +18,7 @@
  */
 
 import type { ChannelAdapter } from "../types.js";
-import type { InboundMessage, OutboundMessage } from "../../core/types.js";
+import type { InboundMessage, OutboundMessage, OutboundFile } from "../../core/types.js";
 import type {
   WhatsAppConfig,
   ReconnectState,
@@ -43,6 +43,7 @@ import {
 // Outbound message handling
 import {
   sendWhatsAppMessage,
+  sendWhatsAppFile,
   sendTypingIndicator,
   sendReadReceipt,
   type LidMapper,
@@ -132,6 +133,11 @@ export class WhatsAppAdapter implements ChannelAdapter {
   // Message store for getMessage callback (populated when we SEND, not receive)
   private messageStore: Map<string, any> = new Map();
 
+  // Attachment configuration
+  private attachmentsDir?: string;
+  private attachmentsMaxBytes?: number;
+  private downloadContentFromMessage?: (message: any, type: string) => Promise<AsyncIterable<Uint8Array>>;
+
   // Reconnect state
   private reconnectState: ReconnectState = {
     attempts: 0,
@@ -184,6 +190,10 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
     // Initialize group metadata cache
     this.groupMetaCache = createGroupMetaCache();
+
+    // Initialize attachment configuration
+    this.attachmentsDir = config.attachmentsDir;
+    this.attachmentsMaxBytes = config.attachmentsMaxBytes;
 
     // Initialize message debouncer (batches rapid consecutive messages)
     this.debouncer = createInboundDebouncer({
@@ -421,6 +431,15 @@ export class WhatsAppAdapter implements ChannelAdapter {
       }
     } catch {} // No competing bots found
 
+    // Import Baileys download function for attachments
+    if (!this.downloadContentFromMessage) {
+      const { downloadContentFromMessage } = await import("@whiskeysockets/baileys");
+      this.downloadContentFromMessage = downloadContentFromMessage as unknown as (
+        message: any,
+        type: string
+      ) => Promise<AsyncIterable<Uint8Array>>;
+    }
+
     // Track QR display for session corruption detection
     let qrWasShown = false;
 
@@ -593,7 +612,13 @@ export class WhatsAppAdapter implements ChannelAdapter {
       const extracted = await extractInboundMessage(
         m,
         this.sock,
-        this.groupMetaCache
+        this.groupMetaCache,
+        // Pass attachment config if enabled
+        this.attachmentsDir && this.downloadContentFromMessage ? {
+          downloadContentFromMessage: this.downloadContentFromMessage,
+          attachmentsDir: this.attachmentsDir,
+          attachmentsMaxBytes: this.attachmentsMaxBytes,
+        } : undefined
       );
 
       if (!extracted) continue; // No text or invalid message
@@ -844,6 +869,21 @@ export class WhatsAppAdapter implements ChannelAdapter {
     _text: string
   ): Promise<void> {
     // WhatsApp doesn't support editing messages - no-op
+  }
+
+  async sendFile(file: OutboundFile): Promise<{ messageId: string }> {
+    if (!this.sock) {
+      throw new Error("WhatsApp not connected");
+    }
+
+    const lidMapper: LidMapper = {
+      selfChatLid: this.selfChatLid,
+      myNumber: this.myNumber,
+      lidToJid: this.lidToJid,
+      messageStore: this.messageStore,
+    };
+
+    return await sendWhatsAppFile(this.sock, file, lidMapper, this.sentMessageIds);
   }
 
   async sendTypingIndicator(chatId: string): Promise<void> {

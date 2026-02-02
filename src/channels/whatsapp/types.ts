@@ -34,6 +34,12 @@ export interface WhatsAppConfig {
 
   /** Self-chat mode - only respond to "Message Yourself" chat (default: false) */
   selfChatMode?: boolean;
+
+  /** Directory to save downloaded attachments */
+  attachmentsDir?: string;
+
+  /** Max attachment size in bytes (0 = metadata only, no download) */
+  attachmentsMaxBytes?: number;
 }
 
 /**

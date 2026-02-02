@@ -6,8 +6,10 @@
  */
 
 import { jidToE164, isGroupJid } from "../utils.js";
-import type { WebInboundMessage } from "./types.js";
+import type { WebInboundMessage, AttachmentExtractionConfig } from "./types.js";
 import type { GroupMetaCache } from "../utils.js";
+import { unwrapMessageContent, extractMediaPreview, collectAttachments } from "./media.js";
+import type { InboundAttachment } from "../../../core/types.js";
 
 /**
  * Extract text content from a Baileys message.
@@ -89,7 +91,8 @@ export function extractMentionedJids(message: import("@whiskeysockets/baileys").
 export async function extractInboundMessage(
   msg: import("@whiskeysockets/baileys").WAMessage,
   sock: import("@whiskeysockets/baileys").WASocket,
-  groupMetaCache: GroupMetaCache
+  groupMetaCache: GroupMetaCache,
+  attachmentConfig?: AttachmentExtractionConfig
 ): Promise<WebInboundMessage | null> {
   const remoteJid = msg.key?.remoteJid;
   if (!remoteJid) return null;
@@ -102,9 +105,32 @@ export async function extractInboundMessage(
   const selfJid = sock.user?.id || "";
   const selfE164 = selfJid ? jidToE164(selfJid) : undefined;
 
-  // Extract message text (convert null to undefined for type safety)
-  const body = extractText(msg.message ?? undefined);
-  if (!body) return null; // Skip messages without text
+  // Unwrap message content (handles ephemeral/viewOnce)
+  const messageContent = unwrapMessageContent(msg.message);
+
+  // Extract text from unwrapped content
+  const body = extractText(messageContent ?? undefined);
+
+  // Detect media
+  const preview = extractMediaPreview(messageContent);
+
+  // Collect attachments if media present and config provided
+  let attachments: InboundAttachment[] = [];
+  if (preview.hasMedia && attachmentConfig) {
+    const result = await collectAttachments({
+      messageContent,
+      chatId: remoteJid,
+      messageId: messageId || 'unknown',
+      ...attachmentConfig,
+    });
+    attachments = result.attachments;
+  }
+
+  // Use caption as fallback text (for media-only messages)
+  const finalBody = body || preview.caption || '';
+  if (!finalBody && attachments.length === 0) {
+    return null; // Skip messages with no text and no media
+  }
 
   // Determine sender
   let from: string;
@@ -152,7 +178,7 @@ export async function extractInboundMessage(
     from,
     to: selfE164 ?? "me",
     chatId: remoteJid,
-    body,
+    body: finalBody,
     pushName: msg.pushName ?? undefined,
     timestamp: new Date(Number(msg.messageTimestamp) * 1000),
     chatType: isGroup ? "group" : "direct",
@@ -167,6 +193,7 @@ export async function extractInboundMessage(
     selfE164,
     isSelfChat,
     wasMentioned,
+    attachments: attachments.length > 0 ? attachments : undefined,
   };
 
   return inboundMessage;

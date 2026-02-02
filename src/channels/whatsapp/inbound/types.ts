@@ -5,6 +5,8 @@
  * Shields the rest of the codebase from Baileys proto complexity.
  */
 
+import type { InboundAttachment } from "../../../core/types.js";
+
 /**
  * Normalized inbound message from WhatsApp.
  * This interface is what the bot core receives - it abstracts away
@@ -78,6 +80,18 @@ export interface WebInboundMessage {
 
   /** Whether sender mentioned the bot */
   wasMentioned?: boolean;
+
+  /** Downloaded media attachments (images, videos, documents, etc.) */
+  attachments?: InboundAttachment[];
+}
+
+/**
+ * Configuration for attachment extraction during message processing
+ */
+export interface AttachmentExtractionConfig {
+  downloadContentFromMessage: (message: any, type: string) => Promise<AsyncIterable<Uint8Array>>;
+  attachmentsDir?: string;
+  attachmentsMaxBytes?: number;
 }
 
 /**
