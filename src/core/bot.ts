@@ -199,10 +199,9 @@ export class LettaBot {
         process.env.LETTA_AGENT_ID = this.store.agentId || undefined;
         session = resumeSession(this.store.conversationId, baseOptions);
       } else if (this.store.agentId) {
-        // Agent exists but no conversation - try default conversation
-        console.log(`[Bot] Resuming agent default conversation: ${this.store.agentId}`);
-        process.env.LETTA_AGENT_ID = this.store.agentId;
-        session = resumeSession(this.store.agentId, baseOptions);
+        // Agent exists but no conversation - create new conversation on existing agent
+        console.log(`[Bot] Creating conversation for agent: ${this.store.agentId}`);
+        session = createSession(this.store.agentId, baseOptions);
       } else {
         // Create new agent with default conversation
         console.log('[Bot] Creating new agent');
@@ -414,8 +413,8 @@ export class LettaBot {
       // Resume the specific conversation we've been using
       session = resumeSession(this.store.conversationId, baseOptions);
     } else if (this.store.agentId) {
-      // Agent exists but no conversation - try default conversation
-      session = resumeSession(this.store.agentId, baseOptions);
+      // Agent exists but no conversation - create new conversation on existing agent
+      session = createSession(this.store.agentId, baseOptions);
     } else {
       // Create new agent with default conversation
       session = createSession(undefined, { ...baseOptions, model: this.config.model, memory: loadMemoryBlocks(this.config.agentName) });
