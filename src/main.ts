@@ -13,6 +13,40 @@ import { spawn } from 'node:child_process';
 // Load YAML config and apply to process.env (overrides .env values)
 import { loadConfig, applyConfigToEnv, syncProviders, resolveConfigPath } from './config/index.js';
 import { isLettaCloudUrl } from './utils/server.js';
+
+// Check if sufficient ENV vars are set for headless/Railway deployment
+function hasSufficientEnvConfig(): boolean {
+  // Need API key (cloud) or base URL (self-hosted)
+  const hasAuth = !!process.env.LETTA_API_KEY || !!process.env.LETTA_BASE_URL;
+  
+  // Need at least one channel
+  const hasChannel = !!(
+    process.env.TELEGRAM_BOT_TOKEN ||
+    process.env.SLACK_BOT_TOKEN ||
+    process.env.DISCORD_BOT_TOKEN ||
+    process.env.WHATSAPP_ENABLED === 'true' ||
+    process.env.SIGNAL_PHONE_NUMBER
+  );
+  
+  return hasAuth && hasChannel;
+}
+
+// Check if config exists BEFORE loading - auto-onboard from ENV vars if possible (Railway/Docker support)
+const configPath = resolveConfigPath();
+if (!existsSync(configPath)) {
+  if (hasSufficientEnvConfig()) {
+    console.log('[Config] No config file found, running setup from environment variables...');
+    const { onboard } = await import('./onboard.js');
+    await onboard({ nonInteractive: true });
+  } else {
+    console.log(`\n  No config found. Either:`);
+    console.log(`    1. Run "lettabot onboard" for interactive setup`);
+    console.log(`    2. Set LETTA_API_KEY + channel token(s) as environment variables\n`);
+    process.exit(1);
+  }
+}
+
+// Now load the config (either existing or just created by auto-onboard)
 const yamlConfig = loadConfig();
 console.log(`[Config] Loaded from ${resolveConfigPath()}`);
 console.log(`[Config] Mode: ${yamlConfig.server.mode}, Agent: ${yamlConfig.agent.name}, Model: ${yamlConfig.agent.model}`);
@@ -119,13 +153,6 @@ import { HeartbeatService } from './cron/heartbeat.js';
 import { PollingService } from './polling/service.js';
 import { agentExists } from './tools/letta-api.js';
 import { installSkillsToWorkingDir } from './skills/loader.js';
-
-// Check if config exists
-const configPath = resolveConfigPath();
-if (!existsSync(configPath)) {
-  console.log(`\n  No config found at ${configPath}. Run "lettabot onboard" first.\n`);
-  process.exit(1);
-}
 
 // Parse heartbeat target (format: "telegram:123456789", "slack:C1234567890", or "discord:123456789012345678")
 function parseHeartbeatTarget(raw?: string): { channel: string; chatId: string } | undefined {

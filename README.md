@@ -98,6 +98,18 @@ That's it! Message your bot on Telegram.
 
 > **Note:** For detailed environment variable reference and multi-channel setup, see [SKILL.md](./SKILL.md)
 
+## Deploy to Railway
+
+Deploy LettaBot to the cloud with one click:
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/letta-ai/lettabot)
+
+You'll need:
+- A Letta API key from [app.letta.com](https://app.letta.com)
+- A Telegram bot token (or other channel credentials)
+
+See [Railway Setup Guide](docs/railway-setup.md) for detailed instructions.
+
 ## Voice Messages
 
 LettaBot can transcribe voice messages using OpenAI Whisper. Voice messages are automatically converted to text and sent to the agent with a `[Voice message]:` prefix.
@@ -296,6 +308,7 @@ lettabot destroy
 ## Documentation
 
 - [Getting Started](docs/getting-started.md)
+- [Railway Deployment](docs/railway-setup.md)
 - [Slack Setup](docs/slack-setup.md)
 - [Discord Setup](docs/discord-setup.md)
 - [WhatsApp Setup](docs/whatsapp-setup.md)
