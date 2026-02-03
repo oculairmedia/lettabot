@@ -520,6 +520,13 @@ export class LettaBot {
     };
   }
   
+  /**
+   * Set agent ID (for container deploys that discover existing agents)
+   */
+  setAgentId(agentId: string): void {
+    this.store.agentId = agentId;
+    console.log(`[Bot] Agent ID set to: ${agentId}`);
+  }
   
   /**
    * Reset agent (clear memory)

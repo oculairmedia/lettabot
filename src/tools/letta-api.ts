@@ -184,3 +184,30 @@ export async function listAgents(query?: string): Promise<Array<{ id: string; na
     return [];
   }
 }
+
+/**
+ * Find an agent by exact name match
+ * Returns the most recently created agent if multiple match
+ */
+export async function findAgentByName(name: string): Promise<{ id: string; name: string } | null> {
+  try {
+    const client = getClient();
+    const page = await client.agents.list({ query_text: name, limit: 50 });
+    let bestMatch: { id: string; name: string; created_at?: string | null } | null = null;
+    
+    for await (const agent of page) {
+      // Exact name match only
+      if (agent.name === name) {
+        // Keep the most recently created if multiple match
+        if (!bestMatch || (agent.created_at && bestMatch.created_at && agent.created_at > bestMatch.created_at)) {
+          bestMatch = { id: agent.id, name: agent.name, created_at: agent.created_at };
+        }
+      }
+    }
+    
+    return bestMatch ? { id: bestMatch.id, name: bestMatch.name } : null;
+  } catch (e) {
+    console.error('[Letta API] Failed to find agent by name:', e);
+    return null;
+  }
+}

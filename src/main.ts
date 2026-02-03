@@ -14,7 +14,8 @@ import { spawn } from 'node:child_process';
 import { loadConfig, applyConfigToEnv, syncProviders, resolveConfigPath } from './config/index.js';
 import { isLettaCloudUrl } from './utils/server.js';
 const yamlConfig = loadConfig();
-console.log(`[Config] Loaded from ${resolveConfigPath()}`);
+const configSource = existsSync(resolveConfigPath()) ? resolveConfigPath() : 'defaults + environment variables';
+console.log(`[Config] Loaded from ${configSource}`);
 console.log(`[Config] Mode: ${yamlConfig.server.mode}, Agent: ${yamlConfig.agent.name}, Model: ${yamlConfig.agent.model}`);
 applyConfigToEnv(yamlConfig);
 
@@ -117,12 +118,13 @@ import { DiscordAdapter } from './channels/discord.js';
 import { CronService } from './cron/service.js';
 import { HeartbeatService } from './cron/heartbeat.js';
 import { PollingService } from './polling/service.js';
-import { agentExists } from './tools/letta-api.js';
+import { agentExists, findAgentByName } from './tools/letta-api.js';
 import { installSkillsToWorkingDir } from './skills/loader.js';
 
-// Check if config exists
+// Check if config exists (skip in Railway/Docker where env vars are used directly)
 const configPath = resolveConfigPath();
-if (!existsSync(configPath)) {
+const isContainerDeploy = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.FLY_APP_NAME || process.env.DOCKER_DEPLOY);
+if (!existsSync(configPath) && !isContainerDeploy) {
   console.log(`\n  No config found at ${configPath}. Run "lettabot onboard" first.\n`);
   process.exit(1);
 }
@@ -333,15 +335,29 @@ async function main() {
   if (initialStatus.agentId) {
     const exists = await agentExists(initialStatus.agentId);
     if (!exists) {
-      console.log(`[Agent] Stored agent ${initialStatus.agentId} not found - creating new agent...`);
+      console.log(`[Agent] Stored agent ${initialStatus.agentId} not found on server`);
       bot.reset();
+      initialStatus = bot.getStatus();
+    }
+  }
+  
+  // Container deploy: try to find existing agent by name if no ID set
+  const agentName = process.env.AGENT_NAME || 'LettaBot';
+  if (!initialStatus.agentId && isContainerDeploy) {
+    console.log(`[Agent] Searching for existing agent named "${agentName}"...`);
+    const found = await findAgentByName(agentName);
+    if (found) {
+      console.log(`[Agent] Found existing agent: ${found.id}`);
+      process.env.LETTA_AGENT_ID = found.id;
+      // Reinitialize bot with found agent
+      bot.setAgentId(found.id);
       initialStatus = bot.getStatus();
     }
   }
   
   // Agent will be created on first user message (lazy initialization)
   if (!initialStatus.agentId) {
-    console.log('[Agent] No agent found - will create on first message');
+    console.log(`[Agent] No agent found - will create "${agentName}" on first message`);
   }
   
   // Register enabled channels
@@ -467,6 +483,9 @@ async function main() {
   console.log('LettaBot is running!');
   console.log('=================================');
   console.log(`Agent ID: ${status.agentId || '(will be created on first message)'}`);
+  if (isContainerDeploy && status.agentId) {
+    console.log(`[Agent] Using agent "${agentName}" (auto-discovered by name)`);
+  }
   console.log(`Channels: ${status.channels.join(', ')}`);
   console.log(`Cron: ${config.cronEnabled ? 'enabled' : 'disabled'}`);
   console.log(`Heartbeat: ${config.heartbeat.enabled ? `every ${config.heartbeat.intervalMinutes} min` : 'disabled'}`);
