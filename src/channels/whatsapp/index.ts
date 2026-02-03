@@ -757,7 +757,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
           isGroup,
           groupName: extracted.groupSubject,
           wasMentioned: extracted.wasMentioned,
-          replyToUser: extracted.replyToSenderE164,
+          replyToUser: extracted.replyContext?.senderE164,
           attachments: extracted.attachments,
         });
       }

@@ -83,10 +83,6 @@ export interface WebInboundMessage {
 
   /** Downloaded media attachments (images, videos, documents, etc.) */
   attachments?: InboundAttachment[];
-
-  /** Reply context - sender info (for implicit mention detection) */
-  replyToSenderJid?: string;
-  replyToSenderE164?: string;
 }
 
 /**

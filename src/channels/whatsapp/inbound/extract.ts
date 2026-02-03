@@ -195,8 +195,6 @@ export async function extractInboundMessage(
     isSelfChat,
     wasMentioned,
     attachments: attachments.length > 0 ? attachments : undefined,
-    replyToSenderJid: replyContext?.senderJid,
-    replyToSenderE164: replyContext?.senderE164,
   };
 
   return inboundMessage;
