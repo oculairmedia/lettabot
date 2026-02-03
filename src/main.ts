@@ -291,6 +291,13 @@ if (!config.telegram.enabled && !config.slack.enabled && !config.whatsapp.enable
   process.exit(1);
 }
 
+// Validate LETTA_API_KEY is set for cloud mode
+if (!process.env.LETTA_API_KEY) {
+  console.error('\n  Error: LETTA_API_KEY is required.');
+  console.error('  Get your API key from https://app.letta.com and set it as an environment variable.\n');
+  process.exit(1);
+}
+
 async function main() {
   console.log('Starting LettaBot...\n');
   
