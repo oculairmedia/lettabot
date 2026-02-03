@@ -4,6 +4,9 @@
 [build]
 builder = "NIXPACKS"
 
+[build.nixpacks]
+nixPkgs = ["nodejs_22"]
+
 [deploy]
 # Build TypeScript before starting
 buildCommand = "npm run build"
