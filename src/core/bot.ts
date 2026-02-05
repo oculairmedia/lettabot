@@ -9,7 +9,7 @@ import { mkdirSync } from 'node:fs';
 import type { ChannelAdapter } from '../channels/types.js';
 import type { BotConfig, InboundMessage, TriggerContext } from './types.js';
 import { Store } from './store.js';
-import { updateAgentName } from '../tools/letta-api.js';
+import { updateAgentName, disableAllToolApprovals } from '../tools/letta-api.js';
 import { installSkillsToAgent } from '../skills/loader.js';
 import { formatMessageEnvelope } from './formatter.js';
 import { loadMemoryBlocks } from './memory.js';
@@ -37,6 +37,12 @@ export class LettaBot {
     this.store = new Store('lettabot-agent.json');
     
     console.log(`LettaBot initialized. Agent ID: ${this.store.agentId || '(new)'}`);
+    
+    if (this.store.agentId) {
+      disableAllToolApprovals(this.store.agentId).catch((err) => {
+        console.warn('[Bot] Failed to disable tool approvals on startup:', err);
+      });
+    }
   }
   
   /**
@@ -372,13 +378,17 @@ export class LettaBot {
               this.store.setAgent(session.agentId, currentBaseUrl, session.conversationId || undefined);
               console.log('Saved agent ID:', session.agentId, 'conversation ID:', session.conversationId, 'on server:', currentBaseUrl);
               
-              // Setup new agents: set name, install skills
+              // Setup new agents: set name, install skills, disable tool approvals
               if (isNewAgent) {
                 if (this.config.agentName && session.agentId) {
                   updateAgentName(session.agentId, this.config.agentName).catch(() => {});
                 }
                 if (session.agentId) {
                   installSkillsToAgent(session.agentId);
+                  // Disable all tool approvals to prevent stuck conversations
+                  disableAllToolApprovals(session.agentId).catch((err) => {
+                    console.warn('[Bot] Failed to disable tool approvals:', err);
+                  });
                 }
               }
             } else if (session.conversationId && session.conversationId !== this.store.conversationId) {

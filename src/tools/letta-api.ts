@@ -196,9 +196,7 @@ export async function findAgentByName(name: string): Promise<{ id: string; name:
     let bestMatch: { id: string; name: string; created_at?: string | null } | null = null;
     
     for await (const agent of page) {
-      // Exact name match only
       if (agent.name === name) {
-        // Keep the most recently created if multiple match
         if (!bestMatch || (agent.created_at && bestMatch.created_at && agent.created_at > bestMatch.created_at)) {
           bestMatch = { id: agent.id, name: agent.name, created_at: agent.created_at };
         }
@@ -225,7 +223,6 @@ export interface PendingApproval {
 
 /**
  * Check for pending approval requests on an agent's conversation.
- * Returns details of any tool calls waiting for approval.
  */
 export async function getPendingApprovals(
   agentId: string,
@@ -234,7 +231,6 @@ export async function getPendingApprovals(
   try {
     const client = getClient();
     
-    // First, check for runs with 'requires_approval' stop reason
     const runsPage = await client.runs.list({
       agent_id: agentId,
       conversation_id: conversationId,
@@ -246,14 +242,12 @@ export async function getPendingApprovals(
     
     for await (const run of runsPage) {
       if (run.status === 'running' || run.stop_reason === 'requires_approval') {
-        // Get recent messages to find approval_request_message
         const messagesPage = await client.agents.messages.list(agentId, {
           conversation_id: conversationId,
           limit: 20,
         });
         
         for await (const msg of messagesPage) {
-          // Check for approval_request_message type
           if ('message_type' in msg && msg.message_type === 'approval_request_message') {
             const approvalMsg = msg as {
               id: string;
@@ -262,7 +256,6 @@ export async function getPendingApprovals(
               run_id?: string;
             };
             
-            // Extract tool call info
             const toolCalls = approvalMsg.tool_calls || (approvalMsg.tool_call ? [approvalMsg.tool_call] : []);
             for (const tc of toolCalls) {
               pendingApprovals.push({
@@ -286,7 +279,6 @@ export async function getPendingApprovals(
 
 /**
  * Reject a pending tool approval request.
- * Sends an approval response with approve: false.
  */
 export async function rejectApproval(
   agentId: string,
@@ -294,12 +286,11 @@ export async function rejectApproval(
     toolCallId: string;
     reason?: string;
   },
-  conversationId?: string
+  _conversationId?: string
 ): Promise<boolean> {
   try {
     const client = getClient();
     
-    // Send approval response via messages.create
     await client.agents.messages.create(agentId, {
       messages: [{
         type: 'approval',
@@ -322,8 +313,6 @@ export async function rejectApproval(
 
 /**
  * Cancel active runs for an agent.
- * Optionally specify specific run IDs to cancel.
- * Note: Requires Redis on the server for canceling active runs.
  */
 export async function cancelRuns(
   agentId: string,
@@ -344,7 +333,6 @@ export async function cancelRuns(
 
 /**
  * Disable tool approval requirement for a specific tool on an agent.
- * This sets requires_approval: false at the server level.
  */
 export async function disableToolApproval(
   agentId: string,
@@ -352,13 +340,11 @@ export async function disableToolApproval(
 ): Promise<boolean> {
   try {
     const client = getClient();
-    // Note: API expects 'requires_approval' but client types say 'body_requires_approval'
-    // This is a bug in @letta-ai/letta-client - filed issue, using workaround
     await client.agents.tools.updateApproval(toolName, {
       agent_id: agentId,
       requires_approval: false,
     } as unknown as Parameters<typeof client.agents.tools.updateApproval>[1]);
-    console.log(`[Letta API] Disabled approval requirement for tool ${toolName} on agent ${agentId}`);
+    console.log(`[Letta API] Disabled approval for tool ${toolName}`);
     return true;
   } catch (e) {
     console.error(`[Letta API] Failed to disable tool approval for ${toolName}:`, e);
@@ -383,8 +369,6 @@ export async function getAgentTools(agentId: string): Promise<Array<{
       tools.push({
         name: tool.name ?? 'unknown',
         id: tool.id,
-        // Note: The API might not return this field directly on list
-        // We may need to check each tool individually
         requiresApproval: (tool as { requires_approval?: boolean }).requires_approval,
       });
     }
@@ -398,7 +382,7 @@ export async function getAgentTools(agentId: string): Promise<Array<{
 
 /**
  * Disable approval requirement for ALL tools on an agent.
- * Useful for ensuring a headless deployment doesn't get stuck.
+ * Essential for headless deployments to prevent stuck conversations.
  */
 export async function disableAllToolApprovals(agentId: string): Promise<number> {
   try {
@@ -410,11 +394,12 @@ export async function disableAllToolApprovals(agentId: string): Promise<number> 
       if (success) disabled++;
     }
     
-    console.log(`[Letta API] Disabled approval for ${disabled}/${tools.length} tools on agent ${agentId}`);
+    if (disabled > 0) {
+      console.log(`[Letta API] Disabled approval for ${disabled}/${tools.length} tools on agent ${agentId}`);
+    }
     return disabled;
   } catch (e) {
     console.error('[Letta API] Failed to disable all tool approvals:', e);
     return 0;
   }
 }
-
