@@ -7,6 +7,7 @@
 
 import type { ChannelAdapter } from './types.js';
 import type { InboundAttachment, InboundMessage, OutboundMessage } from '../core/types.js';
+import { applySignalGroupGating } from './signal/group-gating.js';
 import type { DmPolicy } from '../pairing/types.js';
 import {
   isUserAllowed,
@@ -21,6 +22,10 @@ import { join } from 'node:path';
 import { copyFile, stat, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 
+export interface SignalGroupConfig {
+  requireMention?: boolean;  // Default: true (only respond when mentioned)
+}
+
 export interface SignalConfig {
   phoneNumber: string;        // Bot's phone number (E.164 format, e.g., +15551234567)
   cliPath?: string;           // Path to signal-cli binary (default: "signal-cli")
@@ -33,6 +38,9 @@ export interface SignalConfig {
   selfChatMode?: boolean;     // Respond to Note to Self (default: true)
   attachmentsDir?: string;
   attachmentsMaxBytes?: number;
+  // Group gating
+  mentionPatterns?: string[]; // Regex patterns for mention detection (e.g., ["@bot"])
+  groups?: Record<string, SignalGroupConfig>;  // Per-group settings, "*" for defaults
 }
 
 type SignalRpcResponse<T> = {
@@ -63,6 +71,18 @@ type SignalSseEvent = {
         height?: number;
         caption?: string;
       }>;
+      mentions?: Array<{
+        start?: number;
+        length?: number;
+        uuid?: string;
+        number?: string;
+      }>;
+      quote?: {
+        id?: number;
+        author?: string;
+        authorUuid?: string;
+        text?: string;
+      };
     };
     syncMessage?: {
       sentMessage?: {
@@ -83,6 +103,18 @@ type SignalSseEvent = {
           height?: number;
           caption?: string;
         }>;
+        mentions?: Array<{
+          start?: number;
+          length?: number;
+          uuid?: string;
+          number?: string;
+        }>;
+        quote?: {
+          id?: number;
+          author?: string;
+          authorUuid?: string;
+          text?: string;
+        };
       };
     };
     typingMessage?: {
@@ -682,6 +714,32 @@ This code expires in 1 hour.`;
       }
       
       const isGroup = chatId.startsWith('group:');
+      
+      // Apply group gating - only respond when mentioned (unless configured otherwise)
+      if (isGroup && groupInfo?.groupId) {
+        const mentions = dataMessage?.mentions || syncMessage?.mentions;
+        const quote = dataMessage?.quote || syncMessage?.quote;
+        
+        const gatingResult = applySignalGroupGating({
+          text: messageText || '',
+          groupId: groupInfo.groupId,
+          mentions,
+          quote,
+          selfPhoneNumber: this.config.phoneNumber,
+          groupsConfig: this.config.groups,
+          mentionPatterns: this.config.mentionPatterns,
+        });
+        
+        if (!gatingResult.shouldProcess) {
+          console.log(`[Signal] Group message filtered: ${gatingResult.reason}`);
+          return;
+        }
+        
+        if (gatingResult.wasMentioned) {
+          console.log(`[Signal] Bot mentioned via ${gatingResult.method}`);
+        }
+      }
+      
       const msg: InboundMessage = {
         channel: 'signal',
         chatId,

@@ -104,6 +104,9 @@ export interface SignalConfig {
   selfChat?: boolean;
   dmPolicy?: 'pairing' | 'allowlist' | 'open';
   allowedUsers?: string[];
+  // Group gating
+  mentionPatterns?: string[];  // Regex patterns for mention detection (e.g., ["@bot"])
+  groups?: Record<string, { requireMention?: boolean }>;  // Per-group settings, "*" for defaults
 }
 
 export interface DiscordConfig {
