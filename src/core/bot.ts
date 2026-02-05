@@ -14,6 +14,7 @@ import { installSkillsToAgent } from '../skills/loader.js';
 import { formatMessageEnvelope } from './formatter.js';
 import { loadMemoryBlocks } from './memory.js';
 import { SYSTEM_PROMPT } from './system-prompt.js';
+import { StreamWatchdog } from './stream-watchdog.js';
 
 export class LettaBot {
   private store: Store;
@@ -304,8 +305,17 @@ export class LettaBot {
         adapter.sendTypingIndicator(msg.chatId).catch(() => {});
       }, 4000);
       
+      const watchdog = new StreamWatchdog({
+        onAbort: () => {
+          console.error('[Bot] Stream aborted due to idle timeout');
+          session.close();
+        },
+      });
+      watchdog.start();
+      
       try {
         for await (const streamMsg of session.stream()) {
+          watchdog.ping();
           const msgUuid = (streamMsg as any).uuid;
           
           // When message type changes, finalize the current message
@@ -380,6 +390,7 @@ export class LettaBot {
         }
       } finally {
         clearInterval(typingInterval);
+        watchdog.stop();
       }
       
       // Send final response
@@ -479,21 +490,34 @@ export class LettaBot {
         }
       }
       
+      const watchdog = new StreamWatchdog({
+        onAbort: () => {
+          console.error('[Bot] Stream aborted due to idle timeout (sendToAgent)');
+          session.close();
+        },
+      });
+      watchdog.start();
+      
       let response = '';
-      for await (const msg of session.stream()) {
-        if (msg.type === 'assistant') {
-          response += msg.content;
-        }
-        
-        if (msg.type === 'result') {
-          if (session.agentId && session.agentId !== this.store.agentId) {
-            const currentBaseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.com';
-            this.store.setAgent(session.agentId, currentBaseUrl, session.conversationId || undefined);
-          } else if (session.conversationId && session.conversationId !== this.store.conversationId) {
-            this.store.conversationId = session.conversationId;
+      try {
+        for await (const msg of session.stream()) {
+          watchdog.ping();
+          if (msg.type === 'assistant') {
+            response += msg.content;
           }
-          break;
+          
+          if (msg.type === 'result') {
+            if (session.agentId && session.agentId !== this.store.agentId) {
+              const currentBaseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.com';
+              this.store.setAgent(session.agentId, currentBaseUrl, session.conversationId || undefined);
+            } else if (session.conversationId && session.conversationId !== this.store.conversationId) {
+              this.store.conversationId = session.conversationId;
+            }
+            break;
+          }
         }
+      } finally {
+        watchdog.stop();
       }
       
       return response;
