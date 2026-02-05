@@ -311,9 +311,14 @@ export class LettaBot {
         adapter.sendTypingIndicator(msg.chatId).catch(() => {});
       }, 4000);
       
+      let streamEventCount = 0;
       const watchdog = new StreamWatchdog({
         onAbort: () => {
           console.error('[Bot] Stream aborted due to idle timeout');
+          if (streamEventCount === 0 && usedSpecificConversation) {
+            console.warn('[Bot] Zero events received - clearing invalid conversation ID');
+            this.store.conversationId = null;
+          }
           session.close();
         },
       });
@@ -321,6 +326,7 @@ export class LettaBot {
       
       try {
         for await (const streamMsg of session.stream()) {
+          streamEventCount++;
           watchdog.ping();
           const msgUuid = (streamMsg as any).uuid;
           
@@ -500,9 +506,14 @@ export class LettaBot {
         }
       }
       
+      let streamEventCount = 0;
       const watchdog = new StreamWatchdog({
         onAbort: () => {
           console.error('[Bot] Stream aborted due to idle timeout (sendToAgent)');
+          if (streamEventCount === 0 && usedSpecificConversation) {
+            console.warn('[Bot] Zero events received - clearing invalid conversation ID');
+            this.store.conversationId = null;
+          }
           session.close();
         },
       });
@@ -511,6 +522,7 @@ export class LettaBot {
       let response = '';
       try {
         for await (const msg of session.stream()) {
+          streamEventCount++;
           watchdog.ping();
           if (msg.type === 'assistant') {
             response += msg.content;
