@@ -552,7 +552,7 @@ export class LettaBot {
     senderMxid: string,
     text: string,
     roomId: string,
-    _adapter: ChannelAdapter
+    adapter: ChannelAdapter
   ): Promise<void> {
     console.log(`[Bot] Inter-agent message from ${senderMxid} in ${roomId}`);
     
@@ -560,7 +560,7 @@ export class LettaBot {
     
     const triggerContext: TriggerContext = {
       type: 'agent_message',
-      outputMode: 'silent',
+      outputMode: 'responsive',
       sourceChannel: 'matrix',
       sourceChatId: roomId,
       sourceUserId: senderMxid,
@@ -568,8 +568,14 @@ export class LettaBot {
     
     try {
       const response = await this.sendToAgent(formattedMessage, triggerContext);
-      console.log(`[Bot] Agent processed inter-agent message (SILENT MODE)`);
+      console.log(`[Bot] Agent processed inter-agent message`);
       console.log(`  - Response: ${response?.slice(0, 100)}${(response?.length || 0) > 100 ? '...' : ''}`);
+      
+      // Send response back to Matrix room so the sending agent receives it
+      if (response?.trim()) {
+        await adapter.sendMessage({ chatId: roomId, text: response });
+        console.log(`[Bot] Sent inter-agent response to ${roomId}`);
+      }
     } catch (error) {
       console.error('[Bot] Error processing inter-agent message:', error);
     }

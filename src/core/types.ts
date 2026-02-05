@@ -55,6 +55,12 @@ export interface InboundAttachment {
   kind?: 'image' | 'file' | 'audio' | 'video';
 }
 
+export interface InboundReaction {
+  emoji: string;
+  messageId: string;
+  action?: 'added' | 'removed';
+}
+
 /**
  * Inbound message from any channel
  */
@@ -70,7 +76,10 @@ export interface InboundMessage {
   threadId?: string;      // Slack thread_ts
   isGroup?: boolean;      // Is this from a group chat?
   groupName?: string;     // Group/channel name if applicable
+  wasMentioned?: boolean; // Was bot explicitly mentioned? (groups only)
+  replyToUser?: string;   // Phone number of who they're replying to (if reply)
   attachments?: InboundAttachment[];
+  reaction?: InboundReaction;
 }
 
 /**
