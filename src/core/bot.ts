@@ -9,7 +9,7 @@ import { mkdirSync } from 'node:fs';
 import type { ChannelAdapter } from '../channels/types.js';
 import type { BotConfig, InboundMessage, TriggerContext } from './types.js';
 import { Store } from './store.js';
-import { updateAgentName, disableAllToolApprovals } from '../tools/letta-api.js';
+import { updateAgentName, disableAllToolApprovals, getPendingApprovals, approveApproval } from '../tools/letta-api.js';
 import { installSkillsToAgent } from '../skills/loader.js';
 import { formatMessageEnvelope } from './formatter.js';
 import { loadMemoryBlocks } from './memory.js';
@@ -313,11 +313,16 @@ export class LettaBot {
       
       let streamEventCount = 0;
       const watchdog = new StreamWatchdog({
-        onAbort: () => {
+        onAbort: async () => {
           console.error('[Bot] Stream aborted due to idle timeout');
-          if (streamEventCount === 0 && usedSpecificConversation) {
-            console.warn('[Bot] Zero events received - clearing invalid conversation ID');
-            this.store.conversationId = null;
+          if (streamEventCount === 0 && this.store.agentId) {
+            const pending = await getPendingApprovals(this.store.agentId, this.store.conversationId || undefined);
+            if (pending.length > 0) {
+              console.warn(`[Bot] Found ${pending.length} pending approval(s) - auto-approving`);
+              for (const p of pending) {
+                await approveApproval(this.store.agentId, { toolCallId: p.toolCallId });
+              }
+            }
           }
           session.close();
         },
@@ -508,11 +513,16 @@ export class LettaBot {
       
       let streamEventCount = 0;
       const watchdog = new StreamWatchdog({
-        onAbort: () => {
+        onAbort: async () => {
           console.error('[Bot] Stream aborted due to idle timeout (sendToAgent)');
-          if (streamEventCount === 0 && usedSpecificConversation) {
-            console.warn('[Bot] Zero events received - clearing invalid conversation ID');
-            this.store.conversationId = null;
+          if (streamEventCount === 0 && this.store.agentId) {
+            const pending = await getPendingApprovals(this.store.agentId, this.store.conversationId || undefined);
+            if (pending.length > 0) {
+              console.warn(`[Bot] Found ${pending.length} pending approval(s) - auto-approving`);
+              for (const p of pending) {
+                await approveApproval(this.store.agentId, { toolCallId: p.toolCallId });
+              }
+            }
           }
           session.close();
         },
