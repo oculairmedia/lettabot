@@ -6,7 +6,6 @@
  */
 
 import type { OutboundMessage, OutboundFile } from "../../core/types.js";
-import type { WAMessage } from '@whiskeysockets/baileys';
 import { isLid } from "./utils.js";
 import { basename } from "node:path";
 
@@ -24,8 +23,8 @@ export interface LidMapper {
   /** Map of LID -> real JID */
   lidToJid: Map<string, string>;
 
-  /** Message store for getMessage callback (stores full WAMessage with key) */
-  messageStore?: Map<string, WAMessage>;
+  /** Message store for getMessage callback */
+  messageStore?: Map<string, any>;
 }
 
 /**
@@ -128,8 +127,8 @@ export async function sendWhatsAppMessage(
       sentMessageIds.add(messageId);
 
       // CRITICAL: Store sent message for getMessage callback (enables retry on delivery failure)
-      if (result && lidMapper.messageStore) {
-        lidMapper.messageStore.set(messageId, result);
+      if (message && lidMapper.messageStore) {
+        lidMapper.messageStore.set(messageId, message);
         // Auto-cleanup after 24 hours
         setTimeout(() => {
           lidMapper.messageStore?.delete(messageId);
@@ -239,8 +238,8 @@ export async function sendWhatsAppFile(
       sentMessageIds.add(messageId);
 
       // Store in getMessage cache for retry capability
-      if (result && lidMapper.messageStore) {
-        lidMapper.messageStore.set(messageId, result);
+      if (message && lidMapper.messageStore) {
+        lidMapper.messageStore.set(messageId, message);
         setTimeout(() => {
           lidMapper.messageStore?.delete(messageId);
         }, 24 * 60 * 60 * 1000);

@@ -34,6 +34,7 @@ export interface LettaBotConfig {
     whatsapp?: WhatsAppConfig;
     signal?: SignalConfig;
     discord?: DiscordConfig;
+    matrix?: MatrixConfig;
   };
 
   // Features
@@ -92,10 +93,6 @@ export interface WhatsAppConfig {
   selfChat?: boolean;
   dmPolicy?: 'pairing' | 'allowlist' | 'open';
   allowedUsers?: string[];
-  groupPolicy?: 'open' | 'disabled' | 'allowlist';
-  groupAllowFrom?: string[];
-  mentionPatterns?: string[];
-  groups?: Record<string, { requireMention?: boolean }>;
 }
 
 export interface SignalConfig {
@@ -112,6 +109,16 @@ export interface SignalConfig {
 export interface DiscordConfig {
   enabled: boolean;
   token?: string;
+  dmPolicy?: 'pairing' | 'allowlist' | 'open';
+  allowedUsers?: string[];
+}
+
+export interface MatrixConfig {
+  enabled: boolean;
+  homeserverUrl?: string;
+  accessToken?: string;
+  encryptionEnabled?: boolean;
+  autoJoinRooms?: boolean;
   dmPolicy?: 'pairing' | 'allowlist' | 'open';
   allowedUsers?: string[];
 }

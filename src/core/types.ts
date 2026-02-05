@@ -14,7 +14,7 @@ export type OutputMode = 'responsive' | 'silent';
 /**
  * Trigger types
  */
-export type TriggerType = 'user_message' | 'heartbeat' | 'cron' | 'webhook' | 'feed';
+export type TriggerType = 'user_message' | 'heartbeat' | 'cron' | 'webhook' | 'feed' | 'agent_message';
 
 /**
  * Context about what triggered the agent
@@ -43,7 +43,7 @@ export interface TriggerContext {
 // Original Types
 // =============================================================================
 
-export type ChannelId = 'telegram' | 'slack' | 'whatsapp' | 'signal' | 'discord' | 'mock';
+export type ChannelId = 'telegram' | 'slack' | 'whatsapp' | 'signal' | 'discord' | 'matrix' | 'mock';
 
 export interface InboundAttachment {
   id?: string;
@@ -53,12 +53,6 @@ export interface InboundAttachment {
   url?: string;
   localPath?: string;
   kind?: 'image' | 'file' | 'audio' | 'video';
-}
-
-export interface InboundReaction {
-  emoji: string;
-  messageId: string;
-  action?: 'added' | 'removed';
 }
 
 /**
@@ -76,10 +70,7 @@ export interface InboundMessage {
   threadId?: string;      // Slack thread_ts
   isGroup?: boolean;      // Is this from a group chat?
   groupName?: string;     // Group/channel name if applicable
-  wasMentioned?: boolean; // Was bot explicitly mentioned? (groups only)
-  replyToUser?: string;   // Phone number of who they're replying to (if reply)
   attachments?: InboundAttachment[];
-  reaction?: InboundReaction;
 }
 
 /**

@@ -4,17 +4,16 @@
  * Single agent, single conversation - chat continues across all channels.
  */
 
-import { createAgent, createSession, resumeSession, type Session } from '@letta-ai/letta-code-sdk';
+import { createSession, resumeSession, Session } from '@letta-ai/letta-code-sdk';
 import { mkdirSync } from 'node:fs';
 import type { ChannelAdapter } from '../channels/types.js';
 import type { BotConfig, InboundMessage, TriggerContext } from './types.js';
 import { Store } from './store.js';
-import { updateAgentName, getPendingApprovals, rejectApproval, cancelRuns, disableAllToolApprovals } from '../tools/letta-api.js';
+import { updateAgentName } from '../tools/letta-api.js';
 import { installSkillsToAgent } from '../skills/loader.js';
 import { formatMessageEnvelope } from './formatter.js';
 import { loadMemoryBlocks } from './memory.js';
 import { SYSTEM_PROMPT } from './system-prompt.js';
-import { StreamWatchdog } from './stream-watchdog.js';
 
 export class LettaBot {
   private store: Store;
@@ -45,6 +44,12 @@ export class LettaBot {
   registerChannel(adapter: ChannelAdapter): void {
     adapter.onMessage = (msg) => this.handleMessage(msg, adapter);
     adapter.onCommand = (cmd) => this.handleCommand(cmd);
+    
+    if ('onAgentMessage' in adapter) {
+      (adapter as ChannelAdapter & { onAgentMessage?: (sender: string, text: string, roomId: string) => Promise<void> }).onAgentMessage = 
+        (senderMxid, text, roomId) => this.handleAgentMessage(senderMxid, text, roomId, adapter);
+    }
+    
     this.channels.set(adapter.id, adapter);
     console.log(`Registered channel: ${adapter.name}`);
   }
@@ -115,72 +120,6 @@ export class LettaBot {
   }
   
   /**
-   * Attempt to recover from stuck approval state.
-   * Returns true if recovery was attempted, false if no recovery needed.
-   * @param maxAttempts Maximum recovery attempts before giving up (default: 2)
-   */
-  private async attemptRecovery(maxAttempts = 2): Promise<{ recovered: boolean; shouldReset: boolean }> {
-    if (!this.store.agentId) {
-      return { recovered: false, shouldReset: false };
-    }
-    
-    const attempts = this.store.recoveryAttempts;
-    if (attempts >= maxAttempts) {
-      console.error(`[Bot] Recovery failed after ${attempts} attempts.`);
-      console.error('[Bot] Try running: lettabot reset-conversation');
-      return { recovered: false, shouldReset: true };
-    }
-    
-    console.log('[Bot] Checking for pending approvals...');
-    
-    try {
-      // Check for pending approvals
-      const pendingApprovals = await getPendingApprovals(
-        this.store.agentId,
-        this.store.conversationId || undefined
-      );
-      
-      if (pendingApprovals.length === 0) {
-        // No pending approvals, reset counter and continue
-        this.store.resetRecoveryAttempts();
-        return { recovered: false, shouldReset: false };
-      }
-      
-      console.log(`[Bot] Found ${pendingApprovals.length} pending approval(s), attempting recovery...`);
-      this.store.incrementRecoveryAttempts();
-      
-      // Reject all pending approvals
-      for (const approval of pendingApprovals) {
-        console.log(`[Bot] Rejecting approval for ${approval.toolName} (${approval.toolCallId})`);
-        await rejectApproval(
-          this.store.agentId,
-          { toolCallId: approval.toolCallId, reason: 'Session was interrupted - retrying request' },
-          this.store.conversationId || undefined
-        );
-      }
-      
-      // Cancel any active runs
-      const runIds = [...new Set(pendingApprovals.map(a => a.runId))];
-      if (runIds.length > 0) {
-        console.log(`[Bot] Cancelling ${runIds.length} active run(s)...`);
-        await cancelRuns(this.store.agentId, runIds);
-      }
-      
-      // Disable tool approvals for the future (proactive fix)
-      console.log('[Bot] Disabling tool approval requirements...');
-      await disableAllToolApprovals(this.store.agentId);
-      
-      console.log('[Bot] Recovery completed');
-      return { recovered: true, shouldReset: false };
-      
-    } catch (error) {
-      console.error('[Bot] Recovery failed:', error);
-      this.store.incrementRecoveryAttempts();
-      return { recovered: false, shouldReset: this.store.recoveryAttempts >= maxAttempts };
-    }
-  }
-  
-  /**
    * Queue incoming message for processing (prevents concurrent SDK sessions)
    */
   private async handleMessage(msg: InboundMessage, adapter: ChannelAdapter): Promise<void> {
@@ -247,63 +186,36 @@ export class LettaBot {
     await adapter.sendTypingIndicator(msg.chatId);
     console.log('[Bot] Typing indicator sent');
     
-    // Attempt recovery from stuck approval state before starting session
-    const recovery = await this.attemptRecovery();
-    if (recovery.shouldReset) {
-      await adapter.sendMessage({
-        chatId: msg.chatId,
-        text: '(Session recovery failed after multiple attempts. Try: lettabot reset-conversation)',
-        threadId: msg.threadId,
-      });
-      return;
-    }
-    if (recovery.recovered) {
-      console.log('[Bot] Recovered from stuck approval, continuing with message processing');
-    }
-    
     // Create or resume session
     let session: Session;
     let usedDefaultConversation = false;
     let usedSpecificConversation = false;
-    // Base options for sessions (systemPrompt/memory set via createAgent for new agents)
-    const baseOptions = {
+    const sessionOptions = {
       permissionMode: 'bypassPermissions' as const,
       allowedTools: this.config.allowedTools,
       cwd: this.config.workingDir,
-      // bypassPermissions mode auto-allows all tools, no canUseTool callback needed
-      // But add logging callback to diagnose approval flow issues (#132)
-      canUseTool: (toolName: string, toolInput: Record<string, unknown>) => {
-        console.log(`[Bot] Tool approval requested: ${toolName} (should be auto-approved by bypassPermissions)`);
-        console.log(`[Bot] WARNING: canUseTool callback should NOT be called when permissionMode=bypassPermissions`);
-        // Return allow anyway as fallback
-        return { behavior: 'allow' as const };
-      },
     };
-    console.log('[Bot] Session options:', { permissionMode: baseOptions.permissionMode, allowedTools: baseOptions.allowedTools?.length });
     
     console.log('[Bot] Creating/resuming session');
     try {
     if (this.store.conversationId) {
-      // Resume the specific conversation we've been using
       console.log(`[Bot] Resuming conversation: ${this.store.conversationId}`);
       process.env.LETTA_AGENT_ID = this.store.agentId || undefined;
       usedSpecificConversation = true;
-      session = resumeSession(this.store.conversationId, baseOptions);
+      session = resumeSession(this.store.conversationId, sessionOptions);
     } else if (this.store.agentId) {
-        // Agent exists but no conversation - try default conversation
-        console.log(`[Bot] Resuming agent default conversation: ${this.store.agentId}`);
+        console.log(`[Bot] Creating new conversation on agent: ${this.store.agentId}`);
         process.env.LETTA_AGENT_ID = this.store.agentId;
-        usedDefaultConversation = true;
-        session = resumeSession(this.store.agentId, baseOptions);
+        session = createSession(this.store.agentId, sessionOptions);
       } else {
-        // Create new agent with default conversation
         console.log('[Bot] Creating new agent');
-        const newAgentId = await createAgent({
+        session = new Session({
+          ...sessionOptions,
           model: this.config.model,
-          systemPrompt: SYSTEM_PROMPT,
           memory: loadMemoryBlocks(this.config.agentName),
+          systemPrompt: SYSTEM_PROMPT,
+          newConversation: true,
         });
-        session = createSession(newAgentId, baseOptions);
       }
       console.log('[Bot] Session created/resumed');
       
@@ -325,6 +237,7 @@ export class LettaBot {
           clearTimeout(timeoutId!);
         }
       };
+
       let initInfo;
       try {
         initInfo = await withTimeout(session.initialize(), 'Session initialize');
@@ -332,23 +245,19 @@ export class LettaBot {
         if (usedSpecificConversation && this.store.agentId) {
           console.warn('[Bot] Conversation missing, creating a new conversation...');
           session.close();
-          session = createSession(this.store.agentId, baseOptions);
+          session = createSession(this.store.agentId, sessionOptions);
           initInfo = await withTimeout(session.initialize(), 'Session initialize (new conversation)');
           usedSpecificConversation = false;
           usedDefaultConversation = false;
         } else if (usedDefaultConversation && this.store.agentId) {
           console.warn('[Bot] Default conversation missing, creating a new conversation...');
           session.close();
-          session = createSession(this.store.agentId, baseOptions);
+          session = createSession(this.store.agentId, sessionOptions);
           initInfo = await withTimeout(session.initialize(), 'Session initialize (new conversation)');
           usedDefaultConversation = false;
         } else {
           throw error;
         }
-      }
-      if (initInfo.conversationId && initInfo.conversationId !== this.store.conversationId) {
-        this.store.conversationId = initInfo.conversationId;
-        console.log('[Bot] Saved conversation ID:', initInfo.conversationId);
       }
 
       // Send message to agent with metadata envelope
@@ -367,23 +276,6 @@ export class LettaBot {
       let lastMsgType: string | null = null;
       let lastAssistantUuid: string | null = null;
       let sentAnyMessage = false;
-      let receivedAnyData = false; // Track if we got ANY stream data
-      const msgTypeCounts: Record<string, number> = {};
-      
-      // Stream watchdog - abort if idle for too long
-      const watchdog = new StreamWatchdog({
-        onAbort: () => {
-          session.abort().catch((err) => {
-            console.error('[Bot] Stream abort failed:', err);
-          });
-          try {
-            session.close();
-          } catch (err) {
-            console.error('[Bot] Stream close failed:', err);
-          }
-        },
-      });
-      watchdog.start();
       
       // Helper to finalize and send current accumulated response
       const finalizeMessage = async () => {
@@ -415,15 +307,6 @@ export class LettaBot {
       try {
         for await (const streamMsg of session.stream()) {
           const msgUuid = (streamMsg as any).uuid;
-          watchdog.ping();
-          receivedAnyData = true;
-          msgTypeCounts[streamMsg.type] = (msgTypeCounts[streamMsg.type] || 0) + 1;
-          
-          // Verbose logging: show every stream message type
-          if (process.env.DEBUG_STREAM) {
-            const preview = JSON.stringify(streamMsg).slice(0, 200);
-            console.log(`[Stream] type=${streamMsg.type} ${preview}`);
-          }
           
           // When message type changes, finalize the current message
           // This ensures different message types appear as separate bubbles
@@ -431,20 +314,16 @@ export class LettaBot {
             await finalizeMessage();
           }
           
-          // Log meaningful events (always, not just on type change for tools)
-          if (streamMsg.type === 'tool_call') {
-            const toolName = (streamMsg as any).toolName || 'unknown';
-            console.log(`[Bot] Calling tool: ${toolName}`);
-          } else if (streamMsg.type === 'tool_result') {
-            const isError = (streamMsg as any).isError;
-            const contentLen = (streamMsg as any).content?.length || 0;
-            console.log(`[Bot] Tool completed: error=${isError}, resultLen=${contentLen}`);
-          } else if (streamMsg.type === 'assistant' && lastMsgType !== 'assistant') {
-            console.log(`[Bot] Generating response...`);
-          } else if (streamMsg.type === 'reasoning' && lastMsgType !== 'reasoning') {
-            console.log(`[Bot] Reasoning...`);
-          } else if (streamMsg.type === 'init' && lastMsgType !== 'init') {
-            console.log(`[Bot] Session initialized`);
+          // Log meaningful events
+          if (streamMsg.type !== lastMsgType) {
+            if (streamMsg.type === 'tool_call') {
+              const toolName = (streamMsg as any).toolName || 'unknown';
+              console.log(`[Bot] Calling tool: ${toolName}`);
+            } else if (streamMsg.type === 'tool_result') {
+              console.log(`[Bot] Tool completed`);
+            } else if (streamMsg.type === 'assistant' && lastMsgType !== 'assistant') {
+              console.log(`[Bot] Generating response...`);
+            }
           }
           lastMsgType = streamMsg.type;
           
@@ -475,21 +354,6 @@ export class LettaBot {
           }
           
           if (streamMsg.type === 'result') {
-            // Log result details for debugging (#132)
-            const resultMsg = streamMsg as { result?: string; success?: boolean; error?: string };
-            console.log(`[Bot] Stream result: success=${resultMsg.success}, hasResponse=${response.trim().length > 0}, resultLen=${resultMsg.result?.length || 0}`);
-            console.log(`[Bot] Stream message counts:`, msgTypeCounts);
-            if (resultMsg.error) {
-              console.error(`[Bot] Result error: ${resultMsg.error}`);
-            }
-            
-            // Check for potential stuck state (empty result usually means pending approval or error)
-            if (resultMsg.success && resultMsg.result === '' && !response.trim()) {
-              console.error('[Bot] Warning: Agent returned empty result with no response.');
-              console.error('[Bot] This may indicate a pending approval or interrupted session.');
-              console.error('[Bot] Recovery will be attempted on the next message.');
-            }
-            
             // Save agent ID and conversation ID
             if (session.agentId && session.agentId !== this.store.agentId) {
               const isNewAgent = !this.store.agentId;
@@ -504,7 +368,7 @@ export class LettaBot {
                   updateAgentName(session.agentId, this.config.agentName).catch(() => {});
                 }
                 if (session.agentId) {
-                  installSkillsToAgent(session.agentId, this.config.skills);
+                  installSkillsToAgent(session.agentId);
                 }
               }
             } else if (session.conversationId && session.conversationId !== this.store.conversationId) {
@@ -513,10 +377,8 @@ export class LettaBot {
             }
             break;
           }
-
         }
       } finally {
-        watchdog.stop();
         clearInterval(typingInterval);
       }
       
@@ -529,8 +391,6 @@ export class LettaBot {
             await adapter.sendMessage({ chatId: msg.chatId, text: response, threadId: msg.threadId });
           }
           sentAnyMessage = true;
-          // Reset recovery counter on successful response
-          this.store.resetRecoveryAttempts();
           const preview = response.length > 50 ? response.slice(0, 50) + '...' : response;
           console.log(`[Bot] Sent: "${preview}"`);
         } catch (sendError) {
@@ -538,31 +398,13 @@ export class LettaBot {
           if (!messageId) {
             await adapter.sendMessage({ chatId: msg.chatId, text: response, threadId: msg.threadId });
             sentAnyMessage = true;
-            // Reset recovery counter on successful response
-            this.store.resetRecoveryAttempts();
           }
         }
       }
       
       // Only show "no response" if we never sent anything
       if (!sentAnyMessage) {
-        if (!receivedAnyData) {
-          // Stream timed out with NO data at all - likely stuck approval or connection issue
-          console.error('[Bot] Stream received NO DATA - possible stuck tool approval');
-          console.error('[Bot] Conversation:', this.store.conversationId);
-          console.error('[Bot] This can happen when a previous session disconnected mid-tool-approval');
-          console.error('[Bot] Recovery will be attempted automatically on the next message.');
-          await adapter.sendMessage({ 
-            chatId: msg.chatId, 
-            text: '(Session interrupted. Please try your message again - recovery in progress.)', 
-            threadId: msg.threadId 
-          });
-        } else {
-          console.warn('[Bot] Stream received data but no assistant message');
-          console.warn('[Bot] Message types received:', msgTypeCounts);
-          console.warn('[Bot] This may indicate: ADE session conflict, or tool approval needed');
-          await adapter.sendMessage({ chatId: msg.chatId, text: '(No response from agent)', threadId: msg.threadId });
-        }
+        await adapter.sendMessage({ chatId: msg.chatId, text: '(No response from agent)', threadId: msg.threadId });
       }
       
     } catch (error) {
@@ -591,64 +433,28 @@ export class LettaBot {
     text: string,
     _context?: TriggerContext
   ): Promise<string> {
-    // Wait for any in-progress message processing to complete
-    // This prevents 409 conflicts when heartbeats overlap with user messages
-    while (this.processing) {
-      console.log('[Bot] Waiting for message queue to finish before sendToAgent...');
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    
-    // Mark as processing to prevent queue from starting
-    this.processing = true;
-    console.log('[Bot] sendToAgent acquired processing lock');
-    
-    try {
-      return await this._sendToAgentInternal(text, _context);
-    } finally {
-      this.processing = false;
-      console.log('[Bot] sendToAgent released processing lock');
-      // Trigger queue processing in case messages arrived while we were busy
-      this.processQueue();
-    }
-  }
-  
-  private async _sendToAgentInternal(
-    text: string,
-    _context?: TriggerContext
-  ): Promise<string> {
-    // Base options for sessions (systemPrompt/memory set via createAgent for new agents)
-    const baseOptions = {
+    const sessionOptions = {
       permissionMode: 'bypassPermissions' as const,
       allowedTools: this.config.allowedTools,
       cwd: this.config.workingDir,
-      // bypassPermissions mode auto-allows all tools, no canUseTool callback needed
-      // But add logging callback to diagnose approval flow issues (#132)
-      canUseTool: (toolName: string, _toolInput: Record<string, unknown>) => {
-        console.log(`[Bot] Tool approval requested in sendToAgent: ${toolName}`);
-        console.log(`[Bot] WARNING: canUseTool callback should NOT be called when permissionMode=bypassPermissions`);
-        return { behavior: 'allow' as const };
-      },
     };
     
     let session: Session;
     let usedDefaultConversation = false;
     let usedSpecificConversation = false;
     if (this.store.conversationId) {
-      // Resume the specific conversation we've been using
       usedSpecificConversation = true;
-      session = resumeSession(this.store.conversationId, baseOptions);
+      session = resumeSession(this.store.conversationId, sessionOptions);
     } else if (this.store.agentId) {
-      // Agent exists but no conversation - try default conversation
-      usedDefaultConversation = true;
-      session = resumeSession(this.store.agentId, baseOptions);
+      session = createSession(this.store.agentId, sessionOptions);
     } else {
-      // Create new agent with default conversation
-      const newAgentId = await createAgent({
+      session = new Session({
+        ...sessionOptions,
         model: this.config.model,
-        systemPrompt: SYSTEM_PROMPT,
         memory: loadMemoryBlocks(this.config.agentName),
+        systemPrompt: SYSTEM_PROMPT,
+        newConversation: true,
       });
-      session = createSession(newAgentId, baseOptions);
     }
     
     try {
@@ -658,14 +464,14 @@ export class LettaBot {
         if (usedSpecificConversation && this.store.agentId) {
           console.warn('[Bot] Conversation missing, creating a new conversation...');
           session.close();
-          session = createSession(this.store.agentId, baseOptions);
+          session = createSession(this.store.agentId, sessionOptions);
           await session.send(text);
           usedSpecificConversation = false;
           usedDefaultConversation = false;
         } else if (usedDefaultConversation && this.store.agentId) {
           console.warn('[Bot] Default conversation missing, creating a new conversation...');
           session.close();
-          session = createSession(this.store.agentId, baseOptions);
+          session = createSession(this.store.agentId, sessionOptions);
           await session.send(text);
           usedDefaultConversation = false;
         } else {
@@ -696,49 +502,64 @@ export class LettaBot {
     }
   }
   
-  /**
-   * Deliver a message or file to a specific channel
-   */
+  private async handleAgentMessage(
+    senderMxid: string,
+    text: string,
+    roomId: string,
+    _adapter: ChannelAdapter
+  ): Promise<void> {
+    console.log(`[Bot] Inter-agent message from ${senderMxid} in ${roomId}`);
+    
+    const formattedMessage = `[Inter-agent message from ${senderMxid}]:\n${text}`;
+    
+    const triggerContext: TriggerContext = {
+      type: 'agent_message',
+      outputMode: 'silent',
+      sourceChannel: 'matrix',
+      sourceChatId: roomId,
+      sourceUserId: senderMxid,
+    };
+    
+    try {
+      const response = await this.sendToAgent(formattedMessage, triggerContext);
+      console.log(`[Bot] Agent processed inter-agent message (SILENT MODE)`);
+      console.log(`  - Response: ${response?.slice(0, 100)}${(response?.length || 0) > 100 ? '...' : ''}`);
+    } catch (error) {
+      console.error('[Bot] Error processing inter-agent message:', error);
+    }
+  }
+  
   async deliverToChannel(
     channelId: string,
     chatId: string,
-    options: {
-      text?: string;
-      filePath?: string;
-      kind?: 'image' | 'file';
-    }
+    content: string | { text?: string; filePath?: string; kind?: 'image' | 'file' }
   ): Promise<string | undefined> {
     const adapter = this.channels.get(channelId);
     if (!adapter) {
       console.error(`Channel not found: ${channelId}`);
-      throw new Error(`Channel not found: ${channelId}`);
+      return undefined;
     }
-
-    // Send file if provided
-    if (options.filePath) {
-      if (typeof adapter.sendFile !== 'function') {
-        throw new Error(`Channel ${channelId} does not support file sending`);
-      }
-
-      const result = await adapter.sendFile({
-        chatId,
-        filePath: options.filePath,
-        caption: options.text,  // text becomes caption for files
-        kind: options.kind,
-      });
-
-      return result.messageId;
+    
+    if (typeof content === 'string') {
+      const result = await adapter.sendMessage({ chatId, text: content });
+      return result?.messageId;
     }
-
-    // Send text message
-    if (options.text) {
-      const result = await adapter.sendMessage({ chatId, text: options.text });
-      return result.messageId;
+    
+    const { text, filePath, kind } = content;
+    
+    if (filePath && adapter.sendFile) {
+      const result = await adapter.sendFile({ chatId, filePath, caption: text, kind });
+      return result?.messageId;
     }
-
-    throw new Error('Either text or filePath must be provided');
+    
+    if (text) {
+      const result = await adapter.sendMessage({ chatId, text });
+      return result?.messageId;
+    }
+    
+    return undefined;
   }
-
+  
   /**
    * Get bot status
    */
@@ -749,13 +570,6 @@ export class LettaBot {
     };
   }
   
-  /**
-   * Set agent ID (for container deploys that discover existing agents)
-   */
-  setAgentId(agentId: string): void {
-    this.store.agentId = agentId;
-    console.log(`[Bot] Agent ID set to: ${agentId}`);
-  }
   
   /**
    * Reset agent (clear memory)

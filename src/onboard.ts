@@ -855,32 +855,37 @@ async function stepChannels(config: OnboardConfig, env: Record<string, string>):
     const selfChat = await p.select({
       message: 'WhatsApp: Whose number is this?',
       options: [
-        { value: 'personal', label: 'My personal number (recommended)', hint: 'SAFE: Only "Message Yourself" chat - your contacts never see the bot' },
-        { value: 'dedicated', label: 'Dedicated bot number', hint: 'Bot responds to anyone who messages this number' },
+        { value: 'dedicated', label: 'Dedicated bot number', hint: 'Responds to all incoming messages' },
+        { value: 'personal', label: 'My personal number', hint: 'Only responds to "Message Yourself" chat' },
       ],
-      initialValue: config.whatsapp.selfChat !== false ? 'personal' : 'dedicated',
+      initialValue: config.whatsapp.selfChat ? 'personal' : 'dedicated',
     });
-    if (!p.isCancel(selfChat)) {
-      config.whatsapp.selfChat = selfChat === 'personal';
-      if (selfChat === 'dedicated') {
-        p.log.warn('Dedicated number mode: Bot will respond to ALL incoming messages.');
-        p.log.warn('Only use this if this number is EXCLUSIVELY for the bot.');
-      }
-    }
+    if (!p.isCancel(selfChat)) config.whatsapp.selfChat = selfChat === 'personal';
     
-    // Dedicated numbers use allowlist by default
-    if (config.whatsapp.selfChat === false) {
-      config.whatsapp.dmPolicy = 'allowlist';
-      const users = await p.text({
-        message: 'Allowed phone numbers (comma-separated, with +)',
-        placeholder: '+15551234567,+15559876543',
-        initialValue: config.whatsapp.allowedUsers?.join(',') || '',
-      });
-      if (!p.isCancel(users) && users) {
-        config.whatsapp.allowedUsers = users.split(',').map(s => s.trim()).filter(Boolean);
-      }
-      if (!config.whatsapp.allowedUsers?.length) {
-        p.log.warn('No allowed numbers set. Bot will reject all messages until you add numbers to lettabot.yaml');
+    // Access control (important since WhatsApp has full account access)
+    const dmPolicy = await p.select({
+      message: 'WhatsApp: Who can message the bot?',
+      options: [
+        { value: 'pairing', label: 'Pairing (recommended)', hint: 'Requires CLI approval' },
+        { value: 'allowlist', label: 'Allowlist only', hint: 'Specific phone numbers' },
+        { value: 'open', label: 'Open', hint: '⚠️ Anyone (not recommended - full account access!)' },
+      ],
+      initialValue: config.whatsapp.dmPolicy || 'pairing',
+    });
+    if (!p.isCancel(dmPolicy)) {
+      config.whatsapp.dmPolicy = dmPolicy as 'pairing' | 'allowlist' | 'open';
+      
+      if (dmPolicy === 'pairing') {
+        p.log.info('Users will get a code. Approve with: lettabot pairing approve whatsapp CODE');
+      } else if (dmPolicy === 'allowlist') {
+        const users = await p.text({
+          message: 'Allowed phone numbers (comma-separated, with +)',
+          placeholder: '+15551234567,+15559876543',
+          initialValue: config.whatsapp.allowedUsers?.join(',') || '',
+        });
+        if (!p.isCancel(users) && users) {
+          config.whatsapp.allowedUsers = users.split(',').map(s => s.trim()).filter(Boolean);
+        }
       }
     }
   }
@@ -904,33 +909,37 @@ async function stepChannels(config: OnboardConfig, env: Record<string, string>):
     const selfChat = await p.select({
       message: 'Signal: Whose number is this?',
       options: [
-        { value: 'personal', label: 'My personal number (recommended)', hint: 'SAFE: Only "Note to Self" chat - your contacts never see the bot' },
-        { value: 'dedicated', label: 'Dedicated bot number', hint: 'Bot responds to anyone who messages this number' },
+        { value: 'dedicated', label: 'Dedicated bot number', hint: 'Responds to all incoming messages' },
+        { value: 'personal', label: 'My personal number', hint: 'Only responds to "Note to Self" chat' },
       ],
-      initialValue: config.signal.selfChat !== false ? 'personal' : 'dedicated',
+      initialValue: config.signal.selfChat ? 'personal' : 'dedicated',
     });
-    if (!p.isCancel(selfChat)) {
-      config.signal.selfChat = selfChat === 'personal';
-      if (selfChat === 'dedicated') {
-        p.log.warn('Dedicated number mode: Bot will respond to ALL incoming messages.');
-        p.log.warn('Only use this if this number is EXCLUSIVELY for the bot.');
-      }
-    }
+    if (!p.isCancel(selfChat)) config.signal.selfChat = selfChat === 'personal';
     
-    // Access control only matters for dedicated numbers
-    // Dedicated numbers use allowlist by default
-    if (config.signal.selfChat === false) {
-      config.signal.dmPolicy = 'allowlist';
-      const users = await p.text({
-        message: 'Allowed phone numbers (comma-separated, with +)',
-        placeholder: '+15551234567,+15559876543',
-        initialValue: config.signal.allowedUsers?.join(',') || '',
-      });
-      if (!p.isCancel(users) && users) {
-        config.signal.allowedUsers = users.split(',').map(s => s.trim()).filter(Boolean);
-      }
-      if (!config.signal.allowedUsers?.length) {
-        p.log.warn('No allowed numbers set. Bot will reject all messages until you add numbers to lettabot.yaml');
+    // Access control
+    const dmPolicy = await p.select({
+      message: 'Signal: Who can message the bot?',
+      options: [
+        { value: 'pairing', label: 'Pairing (recommended)', hint: 'Requires CLI approval' },
+        { value: 'allowlist', label: 'Allowlist only', hint: 'Specific phone numbers' },
+        { value: 'open', label: 'Open', hint: 'Anyone (not recommended)' },
+      ],
+      initialValue: config.signal.dmPolicy || 'pairing',
+    });
+    if (!p.isCancel(dmPolicy)) {
+      config.signal.dmPolicy = dmPolicy as 'pairing' | 'allowlist' | 'open';
+      
+      if (dmPolicy === 'pairing') {
+        p.log.info('Users will get a code. Approve with: lettabot pairing approve signal CODE');
+      } else if (dmPolicy === 'allowlist') {
+        const users = await p.text({
+          message: 'Allowed phone numbers (comma-separated, with +)',
+          placeholder: '+15551234567,+15559876543',
+          initialValue: config.signal.allowedUsers?.join(',') || '',
+        });
+        if (!p.isCancel(users) && users) {
+          config.signal.allowedUsers = users.split(',').map(s => s.trim()).filter(Boolean);
+        }
       }
     }
   }

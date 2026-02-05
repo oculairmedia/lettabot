@@ -28,15 +28,12 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
-.claude/
 
 # Runtime files
 cron-log.jsonl
 cron-jobs.json
 lettabot-agent.json
-lettabot-api.json
 PERSONA.md
-CLAUDE.md
 
 # Related repos
 moltbot/
@@ -49,4 +46,3 @@ data/whatsapp-session/
 lettabot.yaml
 lettabot.yml
 bun.lock
-.tool-versions

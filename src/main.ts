@@ -5,21 +5,17 @@
  * Chat continues seamlessly between Telegram, Slack, and WhatsApp.
  */
 
+import { createServer } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, promises as fs } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
-// API server imports
-import { createApiServer } from './api/server.js';
-import { loadOrGenerateApiKey } from './api/auth.js';
-
 // Load YAML config and apply to process.env (overrides .env values)
 import { loadConfig, applyConfigToEnv, syncProviders, resolveConfigPath } from './config/index.js';
 import { isLettaCloudUrl } from './utils/server.js';
-import { getDataDir, getWorkingDir, hasRailwayVolume } from './utils/paths.js';
+import { getDataDir, hasRailwayVolume } from './utils/paths.js';
 const yamlConfig = loadConfig();
-const configSource = existsSync(resolveConfigPath()) ? resolveConfigPath() : 'defaults + environment variables';
-console.log(`[Config] Loaded from ${configSource}`);
+console.log(`[Config] Loaded from ${resolveConfigPath()}`);
 console.log(`[Config] Mode: ${yamlConfig.server.mode}, Agent: ${yamlConfig.agent.name}, Model: ${yamlConfig.agent.model}`);
 applyConfigToEnv(yamlConfig);
 
@@ -28,7 +24,7 @@ syncProviders(yamlConfig).catch(err => console.error('[Config] Failed to sync pr
 
 // Load agent ID from store and set as env var (SDK needs this)
 // Load agent ID from store file, or use LETTA_AGENT_ID env var as fallback
-const STORE_PATH = resolve(getDataDir(), 'lettabot-agent.json');
+const STORE_PATH = resolve(process.cwd(), 'lettabot-agent.json');
 const currentBaseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.com';
 
 if (existsSync(STORE_PATH)) {
@@ -119,13 +115,13 @@ import { SlackAdapter } from './channels/slack.js';
 import { WhatsAppAdapter } from './channels/whatsapp/index.js';
 import { SignalAdapter } from './channels/signal.js';
 import { DiscordAdapter } from './channels/discord.js';
+import { MatrixAdapter } from './channels/matrix.js';
 import { CronService } from './cron/service.js';
 import { HeartbeatService } from './cron/heartbeat.js';
 import { PollingService } from './polling/service.js';
 import { agentExists, findAgentByName } from './tools/letta-api.js';
-// Skills are now installed to agent-scoped location after agent creation (see bot.ts)
 
-// Check if config exists (skip in Railway/Docker where env vars are used directly)
+// Check if config exists
 const configPath = resolveConfigPath();
 const isContainerDeploy = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.FLY_APP_NAME || process.env.DOCKER_DEPLOY);
 if (!existsSync(configPath) && !isContainerDeploy) {
@@ -232,7 +228,7 @@ async function pruneAttachmentsDir(baseDir: string, maxAgeDays: number): Promise
 
 // Configuration from environment
 const config = {
-  workingDir: getWorkingDir(),
+  workingDir: process.env.WORKING_DIR || '/tmp/lettabot',
   model: process.env.MODEL, // e.g., 'claude-sonnet-4-20250514'
   allowedTools: (process.env.ALLOWED_TOOLS || 'Bash,Read,Edit,Write,Glob,Grep,Task,web_search,conversation_search').split(','),
   attachmentsMaxBytes: resolveAttachmentsMaxBytes(),
@@ -274,6 +270,15 @@ const config = {
     dmPolicy: (process.env.DISCORD_DM_POLICY || 'pairing') as 'pairing' | 'allowlist' | 'open',
     allowedUsers: process.env.DISCORD_ALLOWED_USERS?.split(',').filter(Boolean) || [],
   },
+  matrix: {
+    enabled: !!process.env.MATRIX_HOMESERVER_URL && !!process.env.MATRIX_ACCESS_TOKEN,
+    homeserverUrl: process.env.MATRIX_HOMESERVER_URL || '',
+    accessToken: process.env.MATRIX_ACCESS_TOKEN || '',
+    dmPolicy: (process.env.MATRIX_DM_POLICY || 'pairing') as 'pairing' | 'allowlist' | 'open',
+    allowedUsers: process.env.MATRIX_ALLOWED_USERS?.split(',').filter(Boolean) || [],
+    encryptionEnabled: process.env.MATRIX_ENCRYPTION_ENABLED !== 'false',
+    autoJoinRooms: process.env.MATRIX_AUTO_JOIN_ROOMS !== 'false',
+  },
   
   // Cron
   cronEnabled: process.env.CRON_ENABLED === 'true',
@@ -298,16 +303,9 @@ const config = {
 };
 
 // Validate at least one channel is configured
-if (!config.telegram.enabled && !config.slack.enabled && !config.whatsapp.enabled && !config.signal.enabled && !config.discord.enabled) {
+if (!config.telegram.enabled && !config.slack.enabled && !config.whatsapp.enabled && !config.signal.enabled && !config.discord.enabled && !config.matrix.enabled) {
   console.error('\n  Error: No channels configured.');
-  console.error('  Set TELEGRAM_BOT_TOKEN, SLACK_BOT_TOKEN+SLACK_APP_TOKEN, WHATSAPP_ENABLED=true, SIGNAL_PHONE_NUMBER, or DISCORD_BOT_TOKEN\n');
-  process.exit(1);
-}
-
-// Validate LETTA_API_KEY is set for cloud mode
-if (!process.env.LETTA_API_KEY) {
-  console.error('\n  Error: LETTA_API_KEY is required.');
-  console.error('  Get your API key from https://app.letta.com and set it as an environment variable.\n');
+  console.error('  Set TELEGRAM_BOT_TOKEN, SLACK_BOT_TOKEN+SLACK_APP_TOKEN, WHATSAPP_ENABLED=true, SIGNAL_PHONE_NUMBER, DISCORD_BOT_TOKEN, or MATRIX_HOMESERVER_URL+MATRIX_ACCESS_TOKEN\n');
   process.exit(1);
 }
 
@@ -352,31 +350,15 @@ async function main() {
   if (initialStatus.agentId) {
     const exists = await agentExists(initialStatus.agentId);
     if (!exists) {
-      console.log(`[Agent] Stored agent ${initialStatus.agentId} not found on server`);
+      console.log(`[Agent] Stored agent ${initialStatus.agentId} not found - creating new agent...`);
       bot.reset();
-      // Also clear env var so search-by-name can run
-      delete process.env.LETTA_AGENT_ID;
-      initialStatus = bot.getStatus();
-    }
-  }
-  
-  // Container deploy: try to find existing agent by name if no ID set
-  const agentName = process.env.AGENT_NAME || 'LettaBot';
-  if (!initialStatus.agentId && isContainerDeploy) {
-    console.log(`[Agent] Searching for existing agent named "${agentName}"...`);
-    const found = await findAgentByName(agentName);
-    if (found) {
-      console.log(`[Agent] Found existing agent: ${found.id}`);
-      process.env.LETTA_AGENT_ID = found.id;
-      // Reinitialize bot with found agent
-      bot.setAgentId(found.id);
       initialStatus = bot.getStatus();
     }
   }
   
   // Agent will be created on first user message (lazy initialization)
   if (!initialStatus.agentId) {
-    console.log(`[Agent] No agent found - will create "${agentName}" on first message`);
+    console.log('[Agent] No agent found - will create on first message');
   }
   
   // Register enabled channels
@@ -403,10 +385,6 @@ async function main() {
   }
   
   if (config.whatsapp.enabled) {
-    if (!config.whatsapp.selfChatMode) {
-      console.warn('[WhatsApp] WARNING: selfChatMode is OFF - bot will respond to ALL incoming messages!');
-      console.warn('[WhatsApp] Only use this if this is a dedicated bot number, not your personal WhatsApp.');
-    }
     const whatsapp = new WhatsAppAdapter({
       sessionPath: config.whatsapp.sessionPath,
       dmPolicy: config.whatsapp.dmPolicy,
@@ -419,10 +397,6 @@ async function main() {
   }
   
   if (config.signal.enabled) {
-    if (!config.signal.selfChatMode) {
-      console.warn('[Signal] WARNING: selfChatMode is OFF - bot will respond to ALL incoming messages!');
-      console.warn('[Signal] Only use this if this is a dedicated bot number, not your personal Signal.');
-    }
     const signal = new SignalAdapter({
       phoneNumber: config.signal.phoneNumber,
       cliPath: config.signal.cliPath,
@@ -447,12 +421,25 @@ async function main() {
     });
     bot.registerChannel(discord);
   }
+
+  if (config.matrix.enabled) {
+    const matrix = new MatrixAdapter({
+      homeserverUrl: config.matrix.homeserverUrl,
+      accessToken: config.matrix.accessToken,
+      dmPolicy: config.matrix.dmPolicy,
+      allowedUsers: config.matrix.allowedUsers.length > 0 ? config.matrix.allowedUsers : undefined,
+      encryptionEnabled: config.matrix.encryptionEnabled,
+      autoJoinRooms: config.matrix.autoJoinRooms,
+    });
+    bot.registerChannel(matrix);
+  }
   
   // Start cron service if enabled
-  // Note: CronService uses getDataDir() for cron-jobs.json to match the CLI
   let cronService: CronService | null = null;
   if (config.cronEnabled) {
-    cronService = new CronService(bot);
+    cronService = new CronService(bot, {
+      storePath: `${config.workingDir}/cron-jobs.json`,
+    });
     await cronService.start();
   }
   
@@ -487,20 +474,20 @@ async function main() {
   // Start all channels
   await bot.start();
   
-  // Load/generate API key for CLI authentication
-  const apiKey = loadOrGenerateApiKey();
-  console.log(`[API] Key: ${apiKey.slice(0, 8)}... (set LETTABOT_API_KEY to customize)`);
-
-  // Start API server (replaces health server, includes health checks)
-  // Provides endpoints for CLI to send messages across Docker boundaries
-  const apiPort = parseInt(process.env.PORT || '8080', 10);
-  const apiHost = process.env.API_HOST; // undefined = 127.0.0.1 (secure default)
-  const apiCorsOrigin = process.env.API_CORS_ORIGIN; // undefined = same-origin only
-  const apiServer = createApiServer(bot, {
-    port: apiPort,
-    apiKey: apiKey,
-    host: apiHost,
-    corsOrigin: apiCorsOrigin,
+  // Start health check server (for Railway/Docker health checks)
+  // Only exposes "ok" - no sensitive info
+  const healthPort = parseInt(process.env.PORT || '8080', 10);
+  const healthServer = createServer((req, res) => {
+    if (req.url === '/health' || req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('ok');
+    } else {
+      res.writeHead(404);
+      res.end('Not found');
+    }
+  });
+  healthServer.listen(healthPort, () => {
+    console.log(`[Health] Listening on :${healthPort}`);
   });
   
   // Log status
@@ -509,9 +496,6 @@ async function main() {
   console.log('LettaBot is running!');
   console.log('=================================');
   console.log(`Agent ID: ${status.agentId || '(will be created on first message)'}`);
-  if (isContainerDeploy && status.agentId) {
-    console.log(`[Agent] Using agent "${agentName}" (auto-discovered by name)`);
-  }
   console.log(`Channels: ${status.channels.join(', ')}`);
   console.log(`Cron: ${config.cronEnabled ? 'enabled' : 'disabled'}`);
   console.log(`Heartbeat: ${config.heartbeat.enabled ? `every ${config.heartbeat.intervalMinutes} min` : 'disabled'}`);

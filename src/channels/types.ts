@@ -20,16 +20,27 @@ export interface ChannelAdapter {
   
   // Messaging
   sendMessage(msg: OutboundMessage): Promise<{ messageId: string }>;
+  sendFile?(msg: OutboundFile): Promise<{ messageId: string }>;
   editMessage(chatId: string, messageId: string, text: string): Promise<void>;
   sendTypingIndicator(chatId: string): Promise<void>;
-
+  
   // Capabilities (optional)
   supportsEditing?(): boolean;
-  sendFile?(file: OutboundFile): Promise<{ messageId: string }>;
   
   // Event handlers (set by bot core)
   onMessage?: (msg: InboundMessage) => Promise<void>;
   onCommand?: (command: string) => Promise<string | null>;
+  
+  /**
+   * Handler for inter-agent messages (Matrix only)
+   * Called when a Letta agent sends a message to this channel.
+   * Messages are processed in silent mode - the receiving agent decides whether to respond.
+   * 
+   * @param senderMxid - The Matrix ID of the sending agent (e.g., @agent_xxx:matrix.oculair.ca)
+   * @param text - The message text
+   * @param roomId - The Matrix room ID where the message was sent
+   */
+  onAgentMessage?: (senderMxid: string, text: string, roomId: string) => Promise<void>;
 }
 
 /**

@@ -4,8 +4,6 @@ Your personal AI assistant that remembers everything across **Telegram, Slack, D
 
 <img width="750" alt="lettabot-preview" src="https://github.com/user-attachments/assets/9f01b845-d5b0-447b-927d-ae15f9ec7511" />
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/lettabot?utm_medium=integration&utm_source=template&utm_campaign=generic)
-
 ## Features
 
 - **Multi-Channel** - Chat seamlessly across Telegram, Slack, Discord, WhatsApp, and Signal
@@ -312,6 +310,16 @@ Delete the agent store to create a fresh agent:
 ```bash
 lettabot destroy 
 ```
+
+**Heartbeat/cron messages not reaching my chat**
+Heartbeats and cron jobs run in "Silent Mode" - the agent's text output is private and not auto-delivered. To send messages during background tasks, the agent must run:
+```bash
+lettabot-message send --text "Your message here"
+```
+Check the [ADE](https://app.letta.com) to see if your agent is attempting to use this command. Common issues:
+- Bash tool not enabled (agent can't run CLI commands)
+- Agent doesn't understand it needs to use the CLI
+- No delivery target set (user never messaged the bot first)
 
 **Heartbeat/cron messages not reaching my chat**
 Heartbeats and cron jobs run in "Silent Mode" - the agent's text output is private and not auto-delivered. To send messages during background tasks, the agent must run:

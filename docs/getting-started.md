@@ -4,7 +4,7 @@ Get LettaBot running in 5 minutes.
 
 ## Prerequisites
 
-- Node.js 20+ 
+- Node.js 18+ 
 - npm or yarn
 - A Telegram account
 - A Letta account ([app.letta.com](https://app.letta.com))
@@ -14,7 +14,7 @@ Get LettaBot running in 5 minutes.
 ### 1. Clone and Install
 
 ```bash
-git clone https://github.com/letta-ai/lettabot.git
+git clone https://github.com/yourusername/lettabot.git
 cd lettabot
 npm install
 ```
@@ -37,9 +37,7 @@ npm install
 **Option A: Interactive Setup (Recommended)**
 
 ```bash
-npm run build
-npm link
-lettabot onboard
+npm run setup
 ```
 
 This will walk you through configuration interactively.
@@ -99,5 +97,4 @@ ALLOWED_USERS=123456789,987654321
 
 - [Commands Reference](./commands.md) - Learn all bot commands
 - [Gmail Integration](./gmail-pubsub.md) - Set up email notifications
-- [Slack Setup](./slack-setup.md) - Add Slack channel
-- [Discord Setup](./discord-setup.md) - Add Discord channel
+- Check out [PLAN.md](../PLAN.md) for the full roadmap

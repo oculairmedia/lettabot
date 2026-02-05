@@ -17,39 +17,18 @@ LettaBot connects to WhatsApp using **Baileys**, which uses the WhatsApp Web pro
 
 ## Step 1: Enable WhatsApp in Configuration
 
-Add to your `lettabot.yaml` or set environment variables:
-
-```yaml
-# lettabot.yaml
-channels:
-  whatsapp:
-    enabled: true
-    selfChat: true        # IMPORTANT: See below
-```
-
-Or via environment variables:
+Add to your `.env` file:
 
 ```bash
 # WhatsApp Configuration
 WHATSAPP_ENABLED=true
-WHATSAPP_SELF_CHAT_MODE=true  # CRITICAL - see below
+
+# Optional: Custom session storage path (default: ./data/whatsapp-session)
+# WHATSAPP_SESSION_PATH=./data/whatsapp-session
+
+# Optional: Restrict to specific phone numbers
+# WHATSAPP_ALLOWED_USERS=+15551234567,+15559876543
 ```
-
-**Note:** For personal numbers (`selfChat: true`), `dmPolicy` is ignored - only you can message via "Message Yourself". For dedicated bot numbers, onboarding defaults to `allowlist`.
-
-### Self-Chat Mode (Critical Safety Setting)
-
-**`selfChatMode: true`** (default, recommended for personal numbers):
-- Bot ONLY responds to "Message Yourself" chat
-- Bot will NOT message your contacts
-- Safe to use with your personal WhatsApp number
-
-**`selfChatMode: false`** (for dedicated bot numbers):
-- Bot responds to ALL incoming messages
-- Use ONLY with a dedicated phone number
-- Risk of bot messaging your contacts if misconfigured
-
-> **Warning:** If using your personal WhatsApp number, ALWAYS keep `selfChatMode: true` to prevent the bot from accidentally messaging your contacts.
 
 ## Step 2: Start LettaBot
 
@@ -129,30 +108,11 @@ This uses your personal WhatsApp account:
 - Messages appear as coming from your number
 - Consider using a dedicated phone number for the bot
 - Your contacts will see the bot as "you"
-- **Use `selfChatMode: true`** to prevent bot from messaging your contacts
 
 ### Multi-Device Limitations
 - WhatsApp allows up to 4 linked devices
 - The bot counts as one linked device
 - If you unlink the bot, you'll need to scan the QR code again
-
-## Media Support
-
-LettaBot supports receiving images, documents, and voice messages:
-
-- **Images**: Downloaded and shown to the agent (agent can view using Read tool)
-- **Voice messages**: Automatically transcribed via OpenAI Whisper
-- **Documents**: Downloaded with metadata shown to agent
-
-Configure attachment handling in `lettabot.yaml`:
-
-```yaml
-attachments:
-  maxMB: 20          # Max file size to download (default: 20MB)
-  maxAgeDays: 14     # Auto-delete after N days (default: 14)
-```
-
-Attachments are stored in `/tmp/lettabot/attachments/` by default.
 
 ## Running in Production
 
@@ -190,10 +150,9 @@ If you see "logged out" in the logs:
 
 ### Messages Not Being Received
 
-1. Check `selfChatMode` setting - if `true`, only "Message Yourself" works
-2. Make sure the sender's number is allowed by `dmPolicy` setting
-3. If `dmPolicy: allowlist`, check `allowedUsers` list
-4. Look for errors in the console
+1. Make sure the sender's number is in `WHATSAPP_ALLOWED_USERS` (if configured)
+2. Check that the message is a text message (media not fully supported yet)
+3. Look for errors in the console
 
 ### Bot Responding to Old Messages
 
@@ -219,5 +178,5 @@ data/
 ## Next Steps
 
 - [Slack Setup](./slack-setup.md)
-- [Discord Setup](./discord-setup.md)
-- [Signal Setup](./signal-setup.md)
+- [Cron Jobs](./cron-setup.md)
+- [Configuration Reference](./configuration.md)

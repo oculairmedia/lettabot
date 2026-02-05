@@ -417,3 +417,4 @@ export async function disableAllToolApprovals(agentId: string): Promise<number> 
     return 0;
   }
 }
+
