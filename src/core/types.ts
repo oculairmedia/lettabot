@@ -14,7 +14,7 @@ export type OutputMode = 'responsive' | 'silent';
 /**
  * Trigger types
  */
-export type TriggerType = 'user_message' | 'heartbeat' | 'cron' | 'webhook' | 'feed';
+export type TriggerType = 'user_message' | 'heartbeat' | 'cron' | 'webhook' | 'feed' | 'agent_message';
 
 /**
  * Context about what triggered the agent
@@ -43,7 +43,7 @@ export interface TriggerContext {
 // Original Types
 // =============================================================================
 
-export type ChannelId = 'telegram' | 'slack' | 'whatsapp' | 'signal' | 'discord' | 'mock';
+export type ChannelId = 'telegram' | 'slack' | 'whatsapp' | 'signal' | 'discord' | 'matrix' | 'mock';
 
 export interface InboundAttachment {
   id?: string;

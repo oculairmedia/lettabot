@@ -46,11 +46,12 @@ SIGNAL_PHONE_NUMBER=+17075204676
 # SIGNAL_HTTP_HOST=127.0.0.1
 # SIGNAL_HTTP_PORT=8090
 
+# Optional: DM access policy (default: pairing)
+# SIGNAL_DM_POLICY=pairing
+
 # Optional: Self-chat mode for "Note to Self" (default: true)
 # SIGNAL_SELF_CHAT_MODE=true
 ```
-
-**Note:** For personal numbers (`selfChatMode: true`), `dmPolicy` is ignored - only you can message via "Note to Self". For dedicated bot numbers, onboarding defaults to `allowlist`.
 
 ## How It Works
 
@@ -65,7 +66,7 @@ The daemon runs on port 8090 by default to avoid conflicts with other services.
 
 - **Direct Messages** - Receive and respond to DMs
 - **Note to Self** - Use Signal's "Note to Self" feature to message yourself (selfChatMode)
-- **Allowlist** - For dedicated numbers, only pre-approved phone numbers can message
+- **Pairing System** - Unknown senders get a pairing code (same as Telegram)
 
 ## Troubleshooting
 

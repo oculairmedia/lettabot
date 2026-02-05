@@ -34,6 +34,7 @@ export interface LettaBotConfig {
     whatsapp?: WhatsAppConfig;
     signal?: SignalConfig;
     discord?: DiscordConfig;
+    matrix?: MatrixConfig;
   };
 
   // Features
@@ -147,6 +148,16 @@ export interface DiscordConfig {
   allowedUsers?: string[];
   groupPollIntervalMin?: number;  // Batch interval in minutes (default: 10, 0 = immediate)
   instantGroups?: string[];       // Guild/server IDs or channel IDs that bypass batching
+}
+
+export interface MatrixConfig {
+  enabled: boolean;
+  homeserverUrl?: string;
+  accessToken?: string;
+  encryptionEnabled?: boolean;
+  autoJoinRooms?: boolean;
+  dmPolicy?: 'pairing' | 'allowlist' | 'open';
+  allowedUsers?: string[];
 }
 
 export interface GoogleConfig {

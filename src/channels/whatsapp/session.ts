@@ -20,47 +20,6 @@ const INITIAL_CONNECT_TIMEOUT_MS = 30000; // 30 seconds
 const QR_SCAN_TIMEOUT_MS = 120000; // 2 minutes
 const BROWSER_INFO: [string, string, string] = ["LettaBot", "Desktop", "1.0.0"];
 
-// Patterns to filter from console output (crypto noise from Baileys/libsignal)
-const CONSOLE_FILTER_PATTERNS = [
-  /closing.*session.*prekey/i,
-  /closing open session/i,
-  /prekey bundle/i,
-  /bad mac/i,
-  /session error/i,
-  /sessionentry/i,
-  /ratchet/i,
-  /registrationid/i,
-  /basekey/i,
-  /remoteidentitykey/i,
-];
-
-/**
- * Install console filters to suppress Baileys crypto noise.
- * Call this once when WhatsApp channel starts.
- */
-export function installConsoleFilters(): void {
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalWarn = console.warn;
-  
-  const shouldFilter = (...args: any[]): boolean => {
-    const str = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
-    return CONSOLE_FILTER_PATTERNS.some(p => p.test(str));
-  };
-  
-  console.log = (...args: any[]) => {
-    if (!shouldFilter(...args)) originalLog.apply(console, args);
-  };
-  
-  console.error = (...args: any[]) => {
-    if (!shouldFilter(...args)) originalError.apply(console, args);
-  };
-  
-  console.warn = (...args: any[]) => {
-    if (!shouldFilter(...args)) originalWarn.apply(console, args);
-  };
-}
-
 /**
  * Options for creating a WhatsApp socket
  */
@@ -99,9 +58,6 @@ export interface SocketResult {
 
   /** Bot's own JID */
   myJid: string;
-
-  /** Bot's Linked Device ID (for Business/multi-device, used in group mentions) */
-  myLid: string;
 
   /** Bot's phone number (E.164 format) */
   myNumber: string;
@@ -289,20 +245,15 @@ export async function createWaSocket(options: SocketOptions): Promise<SocketResu
 
   // Extract bot's own JID and phone number
   const myJid = sock.user?.id || "";
-  const myLid = sock.user?.lid || "";  // Linked Device ID (for Business/multi-device)
   const myNumber = myJid.replace(/@.*/, "").replace(/:\d+/, "");
 
   console.log(`[WhatsApp] Connected as ${myNumber}`);
-  if (myLid) {
-    console.log(`[WhatsApp] Has LID for group mentions`);
-  }
 
   return {
     sock,
     credsQueue,
     DisconnectReason,
     myJid,
-    myLid,
     myNumber,
   };
 }

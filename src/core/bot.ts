@@ -65,6 +65,12 @@ export class LettaBot {
   registerChannel(adapter: ChannelAdapter): void {
     adapter.onMessage = (msg) => this.handleMessage(msg, adapter);
     adapter.onCommand = (cmd) => this.handleCommand(cmd);
+
+    if ('onAgentMessage' in adapter) {
+      (adapter as ChannelAdapter & { onAgentMessage?: (sender: string, text: string, roomId: string) => Promise<void> }).onAgentMessage =
+        (senderMxid, text, roomId) => this.handleAgentMessage(senderMxid, text, roomId, adapter);
+    }
+
     this.channels.set(adapter.id, adapter);
     console.log(`Registered channel: ${adapter.name}`);
   }
@@ -912,6 +918,33 @@ export class LettaBot {
     }
 
     throw new Error('Either text or filePath must be provided');
+  }
+
+  private async handleAgentMessage(
+    senderMxid: string,
+    text: string,
+    roomId: string,
+    _adapter: ChannelAdapter
+  ): Promise<void> {
+    console.log(`[Bot] Inter-agent message from ${senderMxid} in ${roomId}`);
+
+    const formattedMessage = `[Inter-agent message from ${senderMxid}]:\n${text}`;
+
+    const triggerContext: TriggerContext = {
+      type: 'agent_message',
+      outputMode: 'silent',
+      sourceChannel: 'matrix',
+      sourceChatId: roomId,
+      sourceUserId: senderMxid,
+    };
+
+    try {
+      const response = await this.sendToAgent(formattedMessage, triggerContext);
+      console.log(`[Bot] Agent processed inter-agent message (SILENT MODE)`);
+      console.log(`  - Response: ${response?.slice(0, 100)}${(response?.length || 0) > 100 ? '...' : ''}`);
+    } catch (error) {
+      console.error('[Bot] Error processing inter-agent message:', error);
+    }
   }
 
   /**

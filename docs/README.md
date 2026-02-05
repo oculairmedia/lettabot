@@ -19,6 +19,7 @@ LettaBot is a multi-channel AI assistant powered by [Letta](https://letta.com) t
 - [Discord Setup](./discord-setup.md) - Bot application setup
 - [WhatsApp Setup](./whatsapp-setup.md) - Baileys/QR code setup
 - [Signal Setup](./signal-setup.md) - signal-cli daemon setup
+- [Matrix Setup](./matrix-setup.md) - Matrix/Element bot setup
 
 ## Architecture
 

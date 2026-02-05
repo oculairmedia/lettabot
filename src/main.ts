@@ -120,6 +120,7 @@ import { WhatsAppAdapter } from './channels/whatsapp/index.js';
 import { SignalAdapter } from './channels/signal.js';
 import { DiscordAdapter } from './channels/discord.js';
 import { GroupBatcher } from './core/group-batcher.js';
+import { MatrixAdapter } from './channels/matrix.js';
 import { CronService } from './cron/service.js';
 import { HeartbeatService } from './cron/heartbeat.js';
 import { PollingService } from './polling/service.js';
@@ -296,7 +297,16 @@ const config = {
       : 10,
     instantGroups: process.env.DISCORD_INSTANT_GROUPS?.split(',').filter(Boolean) || [],
   },
-  
+  matrix: {
+    enabled: !!process.env.MATRIX_HOMESERVER_URL && !!process.env.MATRIX_ACCESS_TOKEN,
+    homeserverUrl: process.env.MATRIX_HOMESERVER_URL || '',
+    accessToken: process.env.MATRIX_ACCESS_TOKEN || '',
+    dmPolicy: (process.env.MATRIX_DM_POLICY || 'pairing') as 'pairing' | 'allowlist' | 'open',
+    allowedUsers: process.env.MATRIX_ALLOWED_USERS?.split(',').filter(Boolean) || [],
+    encryptionEnabled: process.env.MATRIX_ENCRYPTION_ENABLED !== 'false',
+    autoJoinRooms: process.env.MATRIX_AUTO_JOIN_ROOMS !== 'false',
+  },
+
   // Cron
   cronEnabled: process.env.CRON_ENABLED === 'true',
   
@@ -329,9 +339,9 @@ const config = {
 };
 
 // Validate at least one channel is configured
-if (!config.telegram.enabled && !config.slack.enabled && !config.whatsapp.enabled && !config.signal.enabled && !config.discord.enabled) {
+if (!config.telegram.enabled && !config.slack.enabled && !config.whatsapp.enabled && !config.signal.enabled && !config.discord.enabled && !config.matrix.enabled) {
   console.error('\n  Error: No channels configured.');
-  console.error('  Set TELEGRAM_BOT_TOKEN, SLACK_BOT_TOKEN+SLACK_APP_TOKEN, WHATSAPP_ENABLED=true, SIGNAL_PHONE_NUMBER, or DISCORD_BOT_TOKEN\n');
+  console.error('  Set TELEGRAM_BOT_TOKEN, SLACK_BOT_TOKEN+SLACK_APP_TOKEN, WHATSAPP_ENABLED=true, SIGNAL_PHONE_NUMBER, DISCORD_BOT_TOKEN, or MATRIX_HOMESERVER_URL+MATRIX_ACCESS_TOKEN\n');
   process.exit(1);
 }
 
@@ -529,6 +539,19 @@ async function main() {
     bot.processGroupBatch(msg, adapter);
   });
   bot.setGroupBatcher(groupBatcher, groupIntervals, instantGroupIds);
+
+  if (config.matrix.enabled) {
+    const matrix = new MatrixAdapter({
+      homeserverUrl: config.matrix.homeserverUrl,
+      accessToken: config.matrix.accessToken,
+      dmPolicy: config.matrix.dmPolicy,
+      allowedUsers: config.matrix.allowedUsers.length > 0 ? config.matrix.allowedUsers : undefined,
+      encryptionEnabled: config.matrix.encryptionEnabled,
+      autoJoinRooms: config.matrix.autoJoinRooms,
+    });
+    bot.registerChannel(matrix);
+  }
+
 
   // Start cron service if enabled
   // Note: CronService uses getDataDir() for cron-jobs.json to match the CLI

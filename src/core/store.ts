@@ -4,10 +4,9 @@
  * Since we use dmScope: "main", there's only ONE agent shared across all channels.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { AgentStore, LastMessageTarget } from './types.js';
-import { getDataDir } from '../utils/paths.js';
 
 const DEFAULT_STORE_PATH = 'lettabot-agent.json';
 
@@ -16,7 +15,7 @@ export class Store {
   private data: AgentStore;
   
   constructor(storePath?: string) {
-    this.storePath = resolve(getDataDir(), storePath || DEFAULT_STORE_PATH);
+    this.storePath = resolve(process.cwd(), storePath || DEFAULT_STORE_PATH);
     this.data = this.load();
   }
   
@@ -34,8 +33,6 @@ export class Store {
   
   private save(): void {
     try {
-      // Ensure directory exists (important for Railway volumes)
-      mkdirSync(dirname(this.storePath), { recursive: true });
       writeFileSync(this.storePath, JSON.stringify(this.data, null, 2));
     } catch (e) {
       console.error('Failed to save agent store:', e);

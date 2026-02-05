@@ -7,8 +7,7 @@
     "lettabot": "./dist/cli.js",
     "lettabot-schedule": "./dist/cron/cli.js",
     "lettabot-message": "./dist/cli/message.js",
-    "lettabot-react": "./dist/cli/react.js",
-    "lettabot-channels": "./dist/cli/channels.js"
+    "lettabot-react": "./dist/cli/react.js"
   },
   "scripts": {
     "setup": "tsx src/setup.ts",
@@ -53,6 +52,7 @@
     "googleapis": "^170.1.0",
     "grammy": "^1.39.3",
     "gray-matter": "^4.0.3",
+    "matrix-bot-sdk": "^0.7.1",
     "node-schedule": "^2.1.1",
     "open": "^11.0.0",
     "openai": "^6.17.0",

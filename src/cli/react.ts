@@ -15,7 +15,6 @@ const config = loadConfig();
 applyConfigToEnv(config);
 import { resolve } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
-import { getDataDir } from '../utils/paths.js';
 
 interface LastTarget {
   channel: string;
@@ -28,7 +27,7 @@ interface AgentStore {
   lastMessageTarget?: LastTarget;
 }
 
-const STORE_PATH = resolve(getDataDir(), 'lettabot-agent.json');
+const STORE_PATH = resolve(process.cwd(), 'lettabot-agent.json');
 
 function loadLastTarget(): LastTarget | null {
   try {
