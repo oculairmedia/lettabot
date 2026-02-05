@@ -480,6 +480,7 @@ export class LettaBot {
       let receivedAnyData = false; // Track if we got ANY stream data
       const msgTypeCounts: Record<string, number> = {};
       
+      
       // Helper to finalize and send current accumulated response
       const finalizeMessage = async () => {
         // Check for silent marker - agent chose not to reply
