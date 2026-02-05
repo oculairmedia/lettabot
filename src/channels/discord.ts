@@ -6,7 +6,7 @@
  */
 
 import type { ChannelAdapter } from './types.js';
-import type { InboundAttachment, InboundMessage, OutboundFile, OutboundMessage } from '../core/types.js';
+import type { InboundAttachment, InboundMessage, InboundReaction, OutboundFile, OutboundMessage } from '../core/types.js';
 import type { DmPolicy } from '../pairing/types.js';
 import { isUserAllowed, upsertPairingRequest } from '../pairing/store.js';
 import { buildAttachmentPath, downloadToFile } from './attachments.js';
@@ -124,10 +124,12 @@ Ask the bot owner to approve with:
       intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.GuildMessageReactions,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
+        GatewayIntentBits.DirectMessageReactions,
       ],
-      partials: [Partials.Channel],
+      partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
     });
 
     this.client.once('clientReady', () => {
@@ -260,6 +262,14 @@ Ask the bot owner to approve with:
 
     this.client.on('error', (err) => {
       console.error('[Discord] Client error:', err);
+    });
+
+    this.client.on('messageReactionAdd', async (reaction, user) => {
+      await this.handleReactionEvent(reaction, user, 'added');
+    });
+
+    this.client.on('messageReactionRemove', async (reaction, user) => {
+      await this.handleReactionEvent(reaction, user, 'removed');
     });
 
     console.log('[Discord] Connecting...');

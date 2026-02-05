@@ -7,7 +7,7 @@
 
 import { Bot, InputFile } from 'grammy';
 import type { ChannelAdapter } from './types.js';
-import type { InboundAttachment, InboundMessage, OutboundFile, OutboundMessage } from '../core/types.js';
+import type { InboundAttachment, InboundMessage, InboundReaction, OutboundFile, OutboundMessage } from '../core/types.js';
 import type { DmPolicy } from '../pairing/types.js';
 import {
   isUserAllowed,
@@ -257,7 +257,119 @@ export class TelegramAdapter implements ChannelAdapter {
       }
     });
 
-    // Handle non-text messages with attachments (excluding voice - handled separately)
+    // Handle message reactions (Bot API >= 7.0)
+    this.bot.on('message_reaction', async (ctx) => {
+      const reaction = ctx.update.message_reaction;
+      if (!reaction) return;
+      const userId = reaction.user?.id;
+      if (!userId) return;
+
+      const access = await this.checkAccess(
+        String(userId),
+        reaction.user?.username,
+        reaction.user?.first_name
+      );
+      if (access !== 'allowed') {
+        return;
+      }
+
+      const chatId = reaction.chat?.id;
+      const messageId = reaction.message_id;
+      if (!chatId || !messageId) return;
+
+      const newEmoji = extractTelegramReaction(reaction.new_reaction?.[0]);
+      const oldEmoji = extractTelegramReaction(reaction.old_reaction?.[0]);
+      const emoji = newEmoji || oldEmoji;
+      if (!emoji) return;
+
+      const action: InboundReaction['action'] = newEmoji ? 'added' : 'removed';
+
+      if (this.onMessage) {
+        await this.onMessage({
+          channel: 'telegram',
+          chatId: String(chatId),
+          userId: String(userId),
+          userName: reaction.user?.username || reaction.user?.first_name || undefined,
+          messageId: String(messageId),
+          text: '',
+          timestamp: new Date(),
+          reaction: {
+            emoji,
+            messageId: String(messageId),
+            action,
+          },
+        });
+      }
+    });
+
+    // Handle voice messages (must be registered before generic 'message' handler)
+    this.bot.on('message:voice', async (ctx) => {
+      const userId = ctx.from?.id;
+      const chatId = ctx.chat.id;
+
+      if (!userId) return;
+
+      // Check if transcription is configured (config or env)
+      const { loadConfig } = await import('../config/index.js');
+      const config = loadConfig();
+      if (!config.transcription?.apiKey && !process.env.OPENAI_API_KEY) {
+        await ctx.reply('Voice messages require OpenAI API key for transcription. See: https://github.com/letta-ai/lettabot#voice-messages');
+        return;
+      }
+
+      try {
+        // Get file link
+        const voice = ctx.message.voice;
+        const file = await ctx.api.getFile(voice.file_id);
+        const fileUrl = `https://api.telegram.org/file/bot${this.config.token}/${file.file_path}`;
+
+        // Download audio
+        const response = await fetch(fileUrl);
+        const buffer = Buffer.from(await response.arrayBuffer());
+
+        // Transcribe
+        const { transcribeAudio } = await import('../transcription/index.js');
+        const result = await transcribeAudio(buffer, 'voice.ogg');
+
+        let messageText: string;
+        if (result.success && result.text) {
+          console.log(`[Telegram] Transcribed voice message: "${result.text.slice(0, 50)}..."`);
+          messageText = `[Voice message]: ${result.text}`;
+        } else {
+          console.error(`[Telegram] Transcription failed: ${result.error}`);
+          messageText = `[Voice message - transcription failed: ${result.error}]`;
+        }
+
+        // Send to agent
+        if (this.onMessage) {
+          await this.onMessage({
+            channel: 'telegram',
+            chatId: String(chatId),
+            userId: String(userId),
+            userName: ctx.from.username || ctx.from.first_name,
+            messageId: String(ctx.message.message_id),
+            text: messageText,
+            timestamp: new Date(),
+          });
+        }
+      } catch (error) {
+        console.error('[Telegram] Error processing voice message:', error);
+        // Send error to agent so it can explain
+        if (this.onMessage) {
+          await this.onMessage({
+            channel: 'telegram',
+            chatId: String(chatId),
+            userId: String(userId),
+            userName: ctx.from?.username || ctx.from?.first_name,
+            messageId: String(ctx.message.message_id),
+            text: `[Voice message - error: ${error instanceof Error ? error.message : 'unknown error'}]`,
+            timestamp: new Date(),
+          });
+        }
+      }
+    });
+
+    // Handle non-text messages with attachments (excluding voice - handled above)
     this.bot.on('message', async (ctx) => {
       if (!ctx.message || ctx.message.text || ctx.message.voice) return;
       const userId = ctx.from?.id;
@@ -278,56 +390,6 @@ export class TelegramAdapter implements ChannelAdapter {
           timestamp: new Date(),
           attachments,
         });
-      }
-    });
-    
-    // Handle voice messages
-    this.bot.on('message:voice', async (ctx) => {
-      const userId = ctx.from?.id;
-      const chatId = ctx.chat.id;
-      
-      if (!userId) return;
-      
-      // Check if transcription is configured (config or env)
-      const { loadConfig } = await import('../config/index.js');
-      const config = loadConfig();
-      if (!config.transcription?.apiKey && !process.env.OPENAI_API_KEY) {
-        await ctx.reply('Voice messages require OpenAI API key for transcription. See: https://github.com/letta-ai/lettabot#voice-messages');
-        return;
-      }
-      
-      try {
-        // Get file link
-        const voice = ctx.message.voice;
-        const file = await ctx.api.getFile(voice.file_id);
-        const fileUrl = `https://api.telegram.org/file/bot${this.config.token}/${file.file_path}`;
-        
-        // Download audio
-        const response = await fetch(fileUrl);
-        const buffer = Buffer.from(await response.arrayBuffer());
-        
-        // Transcribe
-        const { transcribeAudio } = await import('../transcription/index.js');
-        const transcript = await transcribeAudio(buffer, 'voice.ogg');
-        
-        console.log(`[Telegram] Transcribed voice message: "${transcript.slice(0, 50)}..."`);
-        
-        // Send to agent as text with prefix
-        if (this.onMessage) {
-          await this.onMessage({
-            channel: 'telegram',
-            chatId: String(chatId),
-            userId: String(userId),
-            userName: ctx.from.username || ctx.from.first_name,
-            messageId: String(ctx.message.message_id),
-            text: `[Voice message]: ${transcript}`,
-            timestamp: new Date(),
-          });
-        }
-      } catch (error) {
-        console.error('[Telegram] Error processing voice message:', error);
-        // Optionally notify user
-        await ctx.reply('Sorry, I could not transcribe that voice message.');
       }
     });
     
@@ -362,6 +424,9 @@ export class TelegramAdapter implements ChannelAdapter {
         console.error('[Telegram] Bot polling error:', err);
       }
     });
+    
+    // Give it a moment to connect before returning
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
   
   async stop(): Promise<void> {
@@ -609,6 +674,21 @@ export class TelegramAdapter implements ChannelAdapter {
     }
     return attachment;
   }
+}
+
+function extractTelegramReaction(reaction?: {
+  type?: string;
+  emoji?: string;
+  custom_emoji_id?: string;
+}): string | null {
+  if (!reaction) return null;
+  if ('emoji' in reaction && reaction.emoji) {
+    return reaction.emoji;
+  }
+  if ('custom_emoji_id' in reaction && reaction.custom_emoji_id) {
+    return `custom:${reaction.custom_emoji_id}`;
+  }
+  return null;
 }
 
 const TELEGRAM_EMOJI_ALIAS_TO_UNICODE: Record<string, string> = {
