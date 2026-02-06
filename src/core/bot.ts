@@ -9,7 +9,7 @@ import { mkdirSync } from 'node:fs';
 import type { ChannelAdapter } from '../channels/types.js';
 import type { BotConfig, InboundMessage, TriggerContext } from './types.js';
 import { Store } from './store.js';
-import { updateAgentName, getPendingApprovals, rejectApproval, cancelRuns, recoverOrphanedConversationApproval } from '../tools/letta-api.js';
+import { updateAgentName, getPendingApprovals, approveApproval, rejectApproval, cancelRuns, recoverOrphanedConversationApproval, disableAllToolApprovals } from '../tools/letta-api.js';
 import { installSkillsToAgent } from '../skills/loader.js';
 import { formatMessageEnvelope, formatGroupBatchEnvelope, type SessionContextOptions } from './formatter.js';
 import type { GroupBatcher } from './group-batcher.js';
@@ -57,6 +57,14 @@ export class LettaBot {
     this.store = new Store('lettabot-agent.json');
     
     console.log(`LettaBot initialized. Agent ID: ${this.store.agentId || '(new)'}`);
+    
+    if (this.store.agentId) {
+      disableAllToolApprovals(this.store.agentId).then((count) => {
+        console.log(`[Bot] Disabled approval requirement for ${count} tools on startup`);
+      }).catch((err) => {
+        console.warn('[Bot] Failed to disable tool approvals on startup:', err);
+      });
+    }
   }
   
   /**
@@ -227,22 +235,32 @@ export class LettaBot {
       console.log(`[Bot] Found ${pendingApprovals.length} pending approval(s), attempting recovery (attempt ${attempts + 1}/${maxAttempts})...`);
       this.store.incrementRecoveryAttempts();
       
-      // Reject all pending approvals
+      let approvalsFailed = 0;
       for (const approval of pendingApprovals) {
-        console.log(`[Bot] Rejecting approval for ${approval.toolName} (${approval.toolCallId})`);
-        await rejectApproval(
+        console.log(`[Bot] Auto-approving ${approval.toolName} (${approval.toolCallId})`);
+        const success = await approveApproval(
           this.store.agentId,
-          { toolCallId: approval.toolCallId, reason: 'Session was interrupted - retrying request' },
-          this.store.conversationId || undefined
+          { toolCallId: approval.toolCallId }
         );
+        if (!success) {
+          approvalsFailed++;
+        }
       }
       
-      // Cancel any active runs
+      if (approvalsFailed > 0) {
+        console.warn(`[Bot] ${approvalsFailed} approval(s) failed - likely orphaned. Clearing conversation to start fresh.`);
+        this.store.conversationId = null;
+        this.store.resetRecoveryAttempts();
+        return { recovered: true, shouldReset: false };
+      }
+      
       const runIds = [...new Set(pendingApprovals.map(a => a.runId))];
       if (runIds.length > 0) {
         console.log(`[Bot] Cancelling ${runIds.length} active run(s)...`);
         await cancelRuns(this.store.agentId, runIds);
       }
+      
+      await disableAllToolApprovals(this.store.agentId);
       
       console.log('[Bot] Recovery completed');
       return { recovered: true, shouldReset: false };
@@ -375,15 +393,14 @@ export class LettaBot {
       usedSpecificConversation = true;
       session = resumeSession(this.store.conversationId, baseOptions);
     } else if (this.store.agentId) {
-        // Agent exists but no conversation - try default conversation
-        console.log(`[Bot] Resuming agent default conversation: ${this.store.agentId}`);
+        // Agent exists but no conversation - create a new one
+        console.log(`[Bot] Creating new conversation for agent: ${this.store.agentId}`);
         process.env.LETTA_AGENT_ID = this.store.agentId;
-        usedDefaultConversation = true;
-        session = resumeSession(this.store.agentId, baseOptions);
+        session = createSession(this.store.agentId, baseOptions);
       } else {
         // Create new agent with default conversation
         console.log('[Bot] Creating new agent');
-        const newAgentId = await createAgent({
+        const newAgentId = await (createAgent as any)({
           model: this.config.model,
           systemPrompt: SYSTEM_PROMPT,
           memory: loadMemoryBlocks(this.config.agentName),
@@ -606,7 +623,6 @@ export class LettaBot {
               console.error(`[Bot] Result error: ${resultMsg.error}`);
             }
             
-            // Check for potential stuck state (empty result usually means pending approval or error)
             if (resultMsg.success && resultMsg.result === '' && !response.trim()) {
               console.error('[Bot] Warning: Agent returned empty result with no response.');
               console.error('[Bot] Agent ID:', this.store.agentId);
@@ -626,6 +642,21 @@ export class LettaBot {
                   return this.processMessage(msg, adapter, /* retried */ true);
                 }
                 console.warn(`[Bot] No orphaned approvals found: ${convResult.details}`);
+              }
+            }
+            
+            // Detect plan mode issues (agent stuck in read-only plan mode)
+            if (resultMsg.success) {
+              const lowerResponse = response.toLowerCase();
+              if (lowerResponse.includes('plan mode') && (
+                lowerResponse.includes('stuck') ||
+                lowerResponse.includes('exit') ||
+                lowerResponse.includes('read-only') ||
+                lowerResponse.includes('restricted')
+              )) {
+                console.warn('[Bot] Detected plan mode issue in agent response. Clearing conversation to recover.');
+                this.store.conversationId = null;
+                // Don't throw - let the response through so user sees it
               }
             }
             
@@ -649,6 +680,10 @@ export class LettaBot {
             } else if (session.conversationId && session.conversationId !== this.store.conversationId) {
               // Update conversation ID if it changed
               this.store.conversationId = session.conversationId;
+            }
+            if (!resultMsg.success) {
+              console.log(`[Bot] Non-terminal result (${resultMsg.error || 'unknown'}), waiting for stream continuation...`);
+              continue;
             }
             break;
           }
@@ -810,7 +845,7 @@ export class LettaBot {
       session = resumeSession(this.store.agentId, baseOptions);
     } else {
       // Create new agent with default conversation
-      const newAgentId = await createAgent({
+      const newAgentId = await (createAgent as any)({
         model: this.config.model,
         systemPrompt: SYSTEM_PROMPT,
         memory: loadMemoryBlocks(this.config.agentName),
@@ -867,6 +902,11 @@ export class LettaBot {
             this.store.setAgent(session.agentId, currentBaseUrl, session.conversationId || undefined);
           } else if (session.conversationId && session.conversationId !== this.store.conversationId) {
             this.store.conversationId = session.conversationId;
+          }
+          const resultMsg = msg as { success?: boolean; error?: string };
+          if (!resultMsg.success) {
+            console.log(`[Bot] sendToAgent non-terminal result (${resultMsg.error || 'unknown'}), waiting for stream continuation...`);
+            continue;
           }
           break;
         }

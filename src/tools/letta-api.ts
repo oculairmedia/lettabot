@@ -369,6 +369,46 @@ export async function getPendingApprovals(
 }
 
 /**
+ * Approve a pending tool approval request.
+ * Sends an approval response with approve: true to let the tool execute.
+ */
+export async function approveApproval(
+  agentId: string,
+  approval: {
+    toolCallId: string;
+  }
+): Promise<boolean> {
+  try {
+    const client = getClient();
+    
+    // Send approval response via messages.create
+    await client.agents.messages.create(agentId, {
+      messages: [{
+        type: 'approval',
+        approvals: [{
+          approve: true,
+          tool_call_id: approval.toolCallId,
+          type: 'approval',
+        }],
+      }],
+      streaming: false,
+    });
+    
+    console.log(`[Letta API] Approved tool call ${approval.toolCallId}`);
+    return true;
+  } catch (e) {
+    const err = e as { status?: number; error?: { detail?: string } };
+    const detail = err?.error?.detail || '';
+    if (err?.status === 400 && detail.includes('No tool call is currently awaiting approval')) {
+      console.warn(`[Letta API] Approval already resolved for tool call ${approval.toolCallId}`);
+      return true;
+    }
+    console.error('[Letta API] Failed to approve tool call:', e);
+    return false;
+  }
+}
+
+/**
  * Reject a pending tool approval request.
  * Sends an approval response with approve: false.
  */
