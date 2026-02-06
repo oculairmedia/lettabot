@@ -39,6 +39,8 @@ export class LettaBot {
   private channels: Map<string, ChannelAdapter> = new Map();
   private messageQueue: Array<{ msg: InboundMessage; adapter: ChannelAdapter }> = [];
   private lastUserMessageTime: Date | null = null;
+  private lastApprovalDisableAt: number | null = null;
+  private static readonly APPROVAL_DISABLE_REFRESH_MS = 5 * 60 * 1000;
   
   // Callback to trigger heartbeat (set by main.ts)
   public onTriggerHeartbeat?: () => Promise<void>;
@@ -59,10 +61,10 @@ export class LettaBot {
     console.log(`LettaBot initialized. Agent ID: ${this.store.agentId || '(new)'}`);
     
     if (this.store.agentId) {
-      disableAllToolApprovals(this.store.agentId).then((count) => {
-        console.log(`[Bot] Disabled approval requirement for ${count} tools on startup`);
+      this.ensureApprovalsDisabled(this.store.agentId, true).then(() => {
+        console.log('[Bot] Startup approval-disable verification complete');
       }).catch((err) => {
-        console.warn('[Bot] Failed to disable tool approvals on startup:', err);
+        console.warn('[Bot] Failed to verify tool approvals on startup:', err);
       });
     }
   }
@@ -185,6 +187,17 @@ export class LettaBot {
       }
     }
   }
+
+  private async ensureApprovalsDisabled(agentId: string, force = false): Promise<void> {
+    const now = Date.now();
+    if (!force && this.lastApprovalDisableAt && (now - this.lastApprovalDisableAt) < LettaBot.APPROVAL_DISABLE_REFRESH_MS) {
+      return;
+    }
+
+    const count = await disableAllToolApprovals(agentId);
+    this.lastApprovalDisableAt = now;
+    console.log(`[Bot] Verified tool approvals disabled for ${count} tool(s) on ${agentId}`);
+  }
   
   /**
    * Attempt to recover from stuck approval state.
@@ -260,7 +273,7 @@ export class LettaBot {
         await cancelRuns(this.store.agentId, runIds);
       }
       
-      await disableAllToolApprovals(this.store.agentId);
+      await this.ensureApprovalsDisabled(this.store.agentId, true);
       
       console.log('[Bot] Recovery completed');
       return { recovered: true, shouldReset: false };
@@ -363,6 +376,11 @@ export class LettaBot {
     if (recovery.recovered) {
       console.log('[Bot] Recovered from stuck approval, continuing with message processing');
     }
+    if (this.store.agentId) {
+      await this.ensureApprovalsDisabled(this.store.agentId).catch((err) => {
+        console.warn('[Bot] Failed to verify tool approvals before message processing:', err);
+      });
+    }
     
     // Create or resume session
     let session: Session;
@@ -404,6 +422,9 @@ export class LettaBot {
           model: this.config.model,
           systemPrompt: SYSTEM_PROMPT,
           memory: loadMemoryBlocks(this.config.agentName),
+        });
+        await this.ensureApprovalsDisabled(newAgentId, true).catch((err) => {
+          console.warn('[Bot] Failed to disable tool approvals on new agent:', err);
         });
         session = createSession(newAgentId, baseOptions);
       }
@@ -674,7 +695,11 @@ export class LettaBot {
                   updateAgentName(session.agentId, this.config.agentName).catch(() => {});
                 }
                 if (session.agentId) {
-                  installSkillsToAgent(session.agentId, this.config.skills);
+                  const newAgentId = session.agentId;
+                  installSkillsToAgent(newAgentId, this.config.skills);
+                  this.ensureApprovalsDisabled(newAgentId, true).catch((err: unknown) => {
+                    console.warn('[Bot] Failed to verify tool approvals on new agent after skill install:', err);
+                  });
                 }
               }
             } else if (session.conversationId && session.conversationId !== this.store.conversationId) {
@@ -831,6 +856,11 @@ export class LettaBot {
         return { behavior: 'allow' as const };
       },
     };
+    if (this.store.agentId) {
+      await this.ensureApprovalsDisabled(this.store.agentId).catch((err) => {
+        console.warn('[Bot] Failed to verify tool approvals before sendToAgent:', err);
+      });
+    }
     
     let session: Session;
     let usedDefaultConversation = false;
@@ -849,6 +879,9 @@ export class LettaBot {
         model: this.config.model,
         systemPrompt: SYSTEM_PROMPT,
         memory: loadMemoryBlocks(this.config.agentName),
+      });
+      await this.ensureApprovalsDisabled(newAgentId, true).catch((err) => {
+        console.warn('[Bot] Failed to disable tool approvals on new sendToAgent agent:', err);
       });
       session = createSession(newAgentId, baseOptions);
     }

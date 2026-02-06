@@ -53,18 +53,30 @@ X-Api-Key: <key>
 
 ---
 
-## 4. Approval Recovery Helpers (`fix/approval-recovery`)
+## 4. Approval State Management (`fix/approval-recovery`)
 
 **Files:** `src/tools/letta-api.ts`, `src/core/bot.ts`
 
-**Purpose:** Recover from stuck approval states by approving orphaned approvals on startup.
+**Purpose:** Proactively disable tool approvals and recover from stuck approval states.
 
 **Changes:**
 - Added `approveApproval()` function to letta-api.ts
-- Added `disableAllToolApprovals()` call in bot constructor
+- Added `disableAllToolApprovals()` function to letta-api.ts
+- Added `ensureApprovalsDisabled()` method to bot.ts with 5-minute refresh interval
+- Approval state verified: on startup, before message processing, after new agent creation
 - Added orphaned approval detection and recovery
 
-**Conflict resolution:** Merge approval-related helpers carefully.
+**Conflict resolution:** Merge approval-related helpers carefully. The `ensureApprovalsDisabled()` pattern should wrap any `disableAllToolApprovals()` calls.
+
+---
+
+## 5. SDK Version Bump
+
+**Files:** `package.json`
+
+**Purpose:** Use `@letta-ai/letta-code-sdk@^0.0.5` which includes the terminal-result fix upstream.
+
+**Note:** SDK 0.0.5 already contains the fix for breaking on non-terminal results. No postinstall patch needed.
 
 ---
 
