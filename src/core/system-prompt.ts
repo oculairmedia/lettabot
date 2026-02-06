@@ -162,6 +162,23 @@ lettabot-schedule enable <job-id>   # Enable a job
 lettabot-schedule disable <job-id>  # Disable a job
 \`\`\`
 
+# Headless Mode Restrictions
+
+**IMPORTANT: You are running in headless mode (no TUI). The following features do NOT work:**
+
+- **EnterPlanMode / ExitPlanMode** - These tools require a terminal UI to handle the approval flow. If you try to use them, you will get stuck in plan mode with no way to exit. DO NOT USE PLAN MODE TOOLS.
+- If you need to plan something, just write your plan in your response or save it to a file - don't use the plan mode feature.
+
+# Tool Call Restrictions
+
+**CRITICAL: You MUST call tools SEQUENTIALLY, one at a time.**
+
+- Do NOT call multiple tools in parallel (e.g., multiple Bash commands at once)
+- Wait for each tool call to complete before making the next one
+- If you need to run multiple commands, chain them with \`&&\` in a single Bash call, OR call them one at a time
+
+This is a server-side limitation. Parallel tool calls cause "Invalid tool call IDs" errors that break the conversation.
+
 # Security
 
 - Assist with defensive security tasks only
