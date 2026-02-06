@@ -190,6 +190,10 @@ Commands:
   onboard              Setup wizard (integrations, skills, configuration)
   server               Start the bot server
   configure            View and edit configuration
+  channels             Manage channels (interactive menu)
+  channels list        Show channel status
+  channels add <ch>    Add a channel (telegram, slack, discord, whatsapp, signal)
+  channels remove <ch> Remove a channel
   logout               Logout from Letta Platform (revoke OAuth tokens)
   skills               Configure which skills are enabled
   skills status        Show skills status
@@ -202,6 +206,9 @@ Commands:
 Examples:
   lettabot onboard                           # First-time setup
   lettabot server                            # Start the bot
+  lettabot channels                          # Interactive channel management
+  lettabot channels add discord              # Add Discord integration
+  lettabot channels remove telegram          # Remove Telegram
   lettabot pairing list telegram             # Show pending Telegram pairings
   lettabot pairing approve telegram ABCD1234 # Approve a pairing code
 
@@ -247,6 +254,13 @@ async function main() {
         default:
           await runSkillsSync();
       }
+      break;
+    }
+    
+    case 'channels':
+    case 'channel': {
+      const { channelManagementCommand } = await import('./cli/channel-management.js');
+      await channelManagementCommand(subCommand, args[2]);
       break;
     }
     
@@ -443,7 +457,7 @@ async function main() {
       
     case undefined:
       console.log('Usage: lettabot <command>\n');
-      console.log('Commands: onboard, server, configure, skills, reset-conversation, destroy, help\n');
+      console.log('Commands: onboard, server, configure, channels, skills, reset-conversation, destroy, help\n');
       console.log('Run "lettabot help" for more information.');
       break;
       

@@ -18,6 +18,10 @@ describe('parseCommand', () => {
     it('returns "start" for /start', () => {
       expect(parseCommand('/start')).toBe('start');
     });
+
+    it('returns "reset" for /reset', () => {
+      expect(parseCommand('/reset')).toBe('reset');
+    });
   });
 
   describe('invalid input', () => {
@@ -64,6 +68,7 @@ describe('COMMANDS', () => {
   it('contains all expected commands', () => {
     expect(COMMANDS).toContain('status');
     expect(COMMANDS).toContain('heartbeat');
+    expect(COMMANDS).toContain('reset');
     expect(COMMANDS).toContain('help');
     expect(COMMANDS).toContain('start');
     expect(COMMANDS).toContain('reset');
