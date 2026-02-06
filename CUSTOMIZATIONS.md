@@ -80,6 +80,25 @@ X-Api-Key: <key>
 
 ---
 
+## 6. Matrix Environment Variable Mapping (`fix/matrix-env-vars`)
+
+**Files:** `src/config/io.ts`
+
+**Purpose:** The original Matrix support commit added the adapter but forgot to map YAML config to env vars.
+
+**Change:** Added to `configToEnv()`:
+```typescript
+if (config.channels.matrix?.enabled && ...) {
+  env.MATRIX_HOMESERVER_URL = config.channels.matrix.homeserverUrl;
+  env.MATRIX_ACCESS_TOKEN = config.channels.matrix.accessToken;
+  // ... dmPolicy, allowedUsers, encryptionEnabled, autoJoinRooms
+}
+```
+
+**Conflict resolution:** If upstream adds Matrix env var mapping, prefer upstream version.
+
+---
+
 ## Rebase Workflow
 
 ```bash
