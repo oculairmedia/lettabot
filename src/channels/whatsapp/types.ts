@@ -40,6 +40,20 @@ export interface WhatsAppConfig {
 
   /** Max attachment size in bytes (0 = metadata only, no download) */
   attachmentsMaxBytes?: number;
+
+  /** Group policy - how to handle group messages (default: "open") */
+  groupPolicy?: 'open' | 'disabled' | 'allowlist';
+
+  /** Allowed senders in groups (E.164, supports "*" wildcard) */
+  groupAllowFrom?: string[];
+
+  /** Mention patterns for detection (regex, e.g., ["@?bot"]) */
+  mentionPatterns?: string[];
+
+  /** Per-group settings (JID or "*" for defaults) */
+  groups?: Record<string, {
+    requireMention?: boolean;  // Default: true
+  }>;
 }
 
 /**

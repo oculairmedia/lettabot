@@ -7,6 +7,7 @@
 
 import { isUserAllowed, upsertPairingRequest } from "../../../pairing/store.js";
 import type { DmPolicy } from "../../../pairing/types.js";
+import { normalizePhoneForStorage } from "../../../utils/phone.js";
 
 /**
  * Parameters for access control check
@@ -40,6 +41,15 @@ export interface AccessCheckParams {
   sock: {
     sendMessage: (jid: string, content: any) => Promise<any>;
   };
+
+  /** Group sender E.164 (for group allowlist check) */
+  senderE164?: string;
+
+  /** Group policy */
+  groupPolicy?: 'open' | 'disabled' | 'allowlist';
+
+  /** Group sender allowlist */
+  groupAllowFrom?: string[];
 }
 
 /**
@@ -56,7 +66,7 @@ export interface AccessControlResult {
   pairingCode?: string;
 
   /** Reason for result */
-  reason?: "allowed" | "pairing" | "blocked" | "self-chat-mode" | "group" | "self";
+  reason?: "allowed" | "pairing" | "blocked" | "self-chat-mode" | "group" | "self" | "group-disabled" | "group-no-allowlist" | "group-sender-blocked";
 }
 
 /**
@@ -118,11 +128,44 @@ export async function checkInboundAccess(
     allowedUsers,
     selfChatMode,
     sock,
+    senderE164,
+    groupPolicy,
+    groupAllowFrom,
   } = params;
 
-  // Groups always allowed (group-specific access control can be added later)
+  // Group policy enforcement (before DM checks)
   if (isGroup) {
-    return { allowed: true, reason: "group" };
+    const policy = groupPolicy ?? 'open';
+
+    // Disabled: Block all group messages
+    if (policy === 'disabled') {
+      return { allowed: false, reason: 'group-disabled' };
+    }
+
+    // Allowlist: Only allow messages from specific senders
+    if (policy === 'allowlist') {
+      const allowlist = groupAllowFrom ?? allowedUsers ?? [];
+
+      if (allowlist.length === 0) {
+        // No allowlist defined = block all groups
+        return { allowed: false, reason: 'group-no-allowlist' };
+      }
+
+      // Check wildcard or specific sender (normalize phones for consistent comparison)
+      const hasWildcard = allowlist.includes('*');
+      const normalizedSender = senderE164 ? normalizePhoneForStorage(senderE164) : null;
+      const senderAllowed = hasWildcard || (normalizedSender && allowlist.some(num =>
+        normalizePhoneForStorage(num) === normalizedSender
+      ));
+
+      if (!senderAllowed) {
+        return { allowed: false, reason: 'group-sender-blocked' };
+      }
+    }
+
+    // Open policy or sender passed allowlist
+    // Note: Mention gating is applied separately in group-gating module
+    return { allowed: true, reason: 'group' };
   }
 
   // Self-chat always allowed

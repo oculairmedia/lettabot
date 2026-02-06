@@ -43,7 +43,20 @@ export function extractText(message: import("@whiskeysockets/baileys").proto.IMe
  * @returns Reply context or undefined
  */
 export function extractReplyContext(message: import("@whiskeysockets/baileys").proto.IMessage | undefined) {
-  const contextInfo = message?.extendedTextMessage?.contextInfo;
+  // Robust contextInfo extraction - check all message types (OpenClaw pattern)
+  const contextInfo =
+    message?.extendedTextMessage?.contextInfo ||
+    message?.imageMessage?.contextInfo ||
+    message?.videoMessage?.contextInfo ||
+    message?.documentMessage?.contextInfo ||
+    message?.audioMessage?.contextInfo ||
+    message?.stickerMessage?.contextInfo ||
+    message?.contactMessage?.contextInfo ||
+    message?.locationMessage?.contextInfo ||
+    message?.liveLocationMessage?.contextInfo ||
+    message?.groupInviteMessage?.contextInfo ||
+    message?.pollCreationMessage?.contextInfo;
+
   if (!contextInfo?.quotedMessage) {
     return undefined;
   }
@@ -54,6 +67,7 @@ export function extractReplyContext(message: import("@whiskeysockets/baileys").p
     id: contextInfo.stanzaId ?? undefined,
     body: body ?? undefined,
     senderJid: contextInfo.participant ?? undefined,
+    senderE164: contextInfo.participant ? jidToE164(contextInfo.participant) : undefined,
   };
 }
 
@@ -64,7 +78,20 @@ export function extractReplyContext(message: import("@whiskeysockets/baileys").p
  * @returns Array of mentioned JIDs or undefined
  */
 export function extractMentionedJids(message: import("@whiskeysockets/baileys").proto.IMessage | undefined): string[] | undefined {
-  const contextInfo = message?.extendedTextMessage?.contextInfo;
+  // Robust contextInfo extraction - check all message types
+  const contextInfo =
+    message?.extendedTextMessage?.contextInfo ||
+    message?.imageMessage?.contextInfo ||
+    message?.videoMessage?.contextInfo ||
+    message?.documentMessage?.contextInfo ||
+    message?.audioMessage?.contextInfo ||
+    message?.stickerMessage?.contextInfo ||
+    message?.contactMessage?.contextInfo ||
+    message?.locationMessage?.contextInfo ||
+    message?.liveLocationMessage?.contextInfo ||
+    message?.groupInviteMessage?.contextInfo ||
+    message?.pollCreationMessage?.contextInfo;
+
   const mentions = contextInfo?.mentionedJid;
 
   if (!mentions || !Array.isArray(mentions)) {

@@ -6,7 +6,7 @@
 import * as http from 'http';
 import * as fs from 'fs';
 import { validateApiKey } from './auth.js';
-import type { SendMessageRequest, SendMessageResponse, SendFileResponse } from './types.js';
+import type { SendMessageRequest, SendMessageResponse, SendFileResponse, InjectContextRequest, InjectContextResponse } from './types.js';
 import { parseMultipart } from './multipart.js';
 import type { LettaBot } from '../core/bot.js';
 import type { ChannelId } from '../core/types.js';
@@ -116,6 +116,54 @@ export function createApiServer(bot: LettaBot, options: ServerOptions): http.Ser
         res.end(JSON.stringify(response));
       } catch (error: any) {
         console.error('[API] Error handling request:', error);
+        sendError(res, 500, error.message || 'Internal server error');
+      }
+      return;
+    }
+
+    // Route: POST /api/v1/inject - inject context into agent (background, like Gmail polling)
+    if (req.url === '/api/v1/inject' && req.method === 'POST') {
+      try {
+        if (!validateApiKey(req.headers, options.apiKey)) {
+          sendError(res, 401, 'Unauthorized');
+          return;
+        }
+
+        const body = await readBody(req, MAX_BODY_SIZE);
+        let request: InjectContextRequest;
+        try {
+          request = JSON.parse(body);
+        } catch {
+          sendError(res, 400, 'Invalid JSON body');
+          return;
+        }
+
+        if (!request.text) {
+          sendError(res, 400, 'Missing required field: text', 'text');
+          return;
+        }
+
+        if (typeof request.text !== 'string' || request.text.length > MAX_TEXT_LENGTH) {
+          sendError(res, 400, `Text must be a string under ${MAX_TEXT_LENGTH} chars`, 'text');
+          return;
+        }
+
+        const source = request.source || 'api';
+        const prefix = `[${source}] `;
+        const fullText = prefix + request.text;
+
+        console.log(`[API] Injecting context from ${source} (${request.text.length} chars)`);
+        
+        const response = await bot.sendToAgent(fullText);
+        
+        const result: InjectContextResponse = {
+          success: true,
+          response: response || undefined,
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error: any) {
+        console.error('[API] Error injecting context:', error);
         sendError(res, 500, error.message || 'Internal server error');
       }
       return;

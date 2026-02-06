@@ -31,3 +31,15 @@ export interface SendFileResponse {
   error?: string;
   field?: string;
 }
+
+export interface InjectContextRequest {
+  text: string;
+  source?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface InjectContextResponse {
+  success: boolean;
+  response?: string;
+  error?: string;
+}
