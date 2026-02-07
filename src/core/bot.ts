@@ -998,8 +998,20 @@ export class LettaBot {
     senderMxid: string,
     text: string,
     roomId: string,
-    adapter: ChannelAdapter
+    _adapter: ChannelAdapter
   ): Promise<void> {
+    // Self-echo guard: skip messages from our own agent's Matrix identity.
+    // When we send via MCP matrix_messaging, our MXID is @agent_{uuid_with_underscores}:domain
+    // which differs from @lettabot:domain, so the adapter's sender===userId check doesn't catch it.
+    const agentId = this.store.agentId;
+    if (agentId) {
+      const ownAgentLocalpart = `agent_${agentId.replace(/^agent-/, '').replace(/-/g, '_')}`;
+      if (senderMxid.startsWith(`@${ownAgentLocalpart}:`)) {
+        console.log(`[Bot] Skipping self-echo from own agent MXID: ${senderMxid}`);
+        return;
+      }
+    }
+
     console.log(`[Bot] Inter-agent message from ${senderMxid} in ${roomId}`);
 
     const formattedMessage = `[Inter-agent message from ${senderMxid}]:\n${text}`;
@@ -1014,14 +1026,11 @@ export class LettaBot {
 
     try {
       const response = await this.sendToAgent(formattedMessage, triggerContext);
-      console.log(`[Bot] Agent processed inter-agent message`);
+      console.log(`[Bot] Agent processed inter-agent message (silent mode)`);
       console.log(`  - Response: ${response?.slice(0, 100)}${(response?.length || 0) > 100 ? '...' : ''}`);
       
-      // Send response back to Matrix room so the sending agent receives it
-      if (response?.trim()) {
-        await adapter.sendMessage({ chatId: roomId, text: response });
-        console.log(`[Bot] Sent inter-agent response to ${roomId}`);
-      }
+      // Silent mode: agent processes the message but response is NOT posted to the room.
+      // The agent can use `lettabot-message send` explicitly if it wants to surface something.
     } catch (error) {
       console.error('[Bot] Error processing inter-agent message:', error);
     }
