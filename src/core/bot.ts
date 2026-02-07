@@ -477,8 +477,18 @@ export class LettaBot {
         adapter.sendTypingIndicator(msg.chatId).catch(() => {});
       }, 4000);
       
+      const seenToolCallIds = new Set<string>();
       try {
         for await (const streamMsg of session.stream()) {
+          // Deduplicate tool_call chunks: the server streams tool_call_message
+          // events token-by-token as arguments are generated, so a single tool
+          // call produces many wire events with the same toolCallId.
+          // Only count/log the first chunk per unique toolCallId.
+          if (streamMsg.type === 'tool_call') {
+            const toolCallId = (streamMsg as any).toolCallId;
+            if (toolCallId && seenToolCallIds.has(toolCallId)) continue;
+            if (toolCallId) seenToolCallIds.add(toolCallId);
+          }
           const msgUuid = (streamMsg as any).uuid;
           watchdog.ping();
           receivedAnyData = true;
