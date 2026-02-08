@@ -35,7 +35,7 @@ export async function startWorker(): Promise<Worker> {
     connection,
     namespace: 'default',
     taskQueue: TASK_QUEUE,
-    workflowsPath: require.resolve('./workflows'),
+    workflowsPath: require.resolve('../temporal-cjs/workflows'),
     activities,
   });
 

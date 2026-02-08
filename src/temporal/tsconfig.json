@@ -8,11 +8,11 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "../../dist/temporal",
+    "outDir": "../../dist/temporal-cjs",
     "rootDir": ".",
     "declaration": true,
     "sourceMap": true
   },
-  "include": ["workflows.ts", "activities.ts", "types.ts"],
+  "include": ["workflows.ts", "types.ts"],
   "exclude": ["node_modules"]
 }
