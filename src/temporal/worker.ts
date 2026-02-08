@@ -8,7 +8,7 @@
  * avoiding ESM/CJS conflicts since the project is "type": "module".
  */
 
-import { Worker, NativeConnection, bundleWorkflowCode } from '@temporalio/worker';
+import { Worker, NativeConnection, bundleWorkflowCode, Runtime } from '@temporalio/worker';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import * as activities from './activities.js';
@@ -28,6 +28,12 @@ let worker: Worker | null = null;
  * Returns the worker instance for graceful shutdown.
  */
 export async function startWorker(): Promise<Worker> {
+  // Disable worker heartbeating — requires Temporal server ≥1.29.1 (we run 1.22.4).
+  // See issue lb-2ry for the server upgrade plan.
+  Runtime.install({
+    workerHeartbeatInterval: 0,
+  });
+
   console.log(`[Temporal Worker] Connecting to Temporal at ${TEMPORAL_ADDRESS}`);
 
   // Pre-bundle from TypeScript source — webpack handles TS natively,
@@ -69,7 +75,11 @@ export async function startWorker(): Promise<Worker> {
 export async function stopWorker(): Promise<void> {
   if (worker) {
     console.log('[Temporal Worker] Shutting down...');
-    worker.shutdown();
+    try {
+      worker.shutdown();
+    } catch {
+      // Worker may already be draining from Runtime's built-in signal handler
+    }
     worker = null;
   }
 }
