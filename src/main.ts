@@ -305,6 +305,10 @@ const config = {
     allowedUsers: process.env.MATRIX_ALLOWED_USERS?.split(',').filter(Boolean) || [],
     encryptionEnabled: process.env.MATRIX_ENCRYPTION_ENABLED !== 'false',
     autoJoinRooms: process.env.MATRIX_AUTO_JOIN_ROOMS !== 'false',
+    groupPollIntervalMin: process.env.MATRIX_GROUP_POLL_INTERVAL_MIN
+      ? parseInt(process.env.MATRIX_GROUP_POLL_INTERVAL_MIN, 10)
+      : 0,
+    instantGroups: process.env.MATRIX_INSTANT_GROUPS?.split(',').filter(Boolean) || [],
   },
 
   // Cron
@@ -517,6 +521,9 @@ async function main() {
   if (config.discord.enabled) {
     groupIntervals.set('discord', config.discord.groupPollIntervalMin ?? 10);
   }
+  if (config.matrix.enabled) {
+    groupIntervals.set('matrix', config.matrix.groupPollIntervalMin ?? 0);
+  }
   // Build instant group IDs set (channel:id format)
   const instantGroupIds = new Set<string>();
   const channelInstantGroups: Array<[string, string[]]> = [
@@ -525,6 +532,7 @@ async function main() {
     ['whatsapp', config.whatsapp.instantGroups],
     ['signal', config.signal.instantGroups],
     ['discord', config.discord.instantGroups],
+    ['matrix', config.matrix.instantGroups || []],
   ];
   for (const [channel, ids] of channelInstantGroups) {
     for (const id of ids) {

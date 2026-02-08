@@ -167,6 +167,8 @@ export interface MatrixConfig {
   autoJoinRooms?: boolean;
   dmPolicy?: 'pairing' | 'allowlist' | 'open';
   allowedUsers?: string[];
+  groupPollIntervalMin?: number;
+  instantGroups?: string[];
 }
 
 export interface GoogleConfig {

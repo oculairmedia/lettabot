@@ -210,6 +210,12 @@ export function configToEnv(config: LettaBotConfig): Record<string, string> {
     if (config.channels.matrix.autoJoinRooms !== undefined) {
       env.MATRIX_AUTO_JOIN_ROOMS = String(config.channels.matrix.autoJoinRooms);
     }
+    if (config.channels.matrix.groupPollIntervalMin !== undefined) {
+      env.MATRIX_GROUP_POLL_INTERVAL_MIN = String(config.channels.matrix.groupPollIntervalMin);
+    }
+    if (config.channels.matrix.instantGroups?.length) {
+      env.MATRIX_INSTANT_GROUPS = config.channels.matrix.instantGroups.join(',');
+    }
   }
   
   // Features
