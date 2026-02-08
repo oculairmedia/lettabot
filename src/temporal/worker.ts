@@ -66,7 +66,8 @@ export async function startWorker(bot?: LettaBot): Promise<Worker> {
 
   console.log(`[Temporal Worker] Started on task queue: ${TASK_QUEUE}`);
   console.log(`[Temporal Worker] Registered workflows: BackgroundTaskWorkflow, WorkerSpawnWorkflow`);
-  console.log(`[Temporal Worker] Registered activities: ${Object.keys(activities).filter(k => typeof (activities as Record<string, unknown>)[k] === 'function').join(', ')}`);
+  const allActivities = { ...activities, ...workerActivities };
+  console.log(`[Temporal Worker] Registered activities: ${Object.keys(allActivities).filter(k => typeof (allActivities as Record<string, unknown>)[k] === 'function').join(', ')}`);
 
   // Run in background (non-blocking)
   worker.run().catch(err => {

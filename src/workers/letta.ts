@@ -16,6 +16,12 @@ function getClient(): Letta {
   return client;
 }
 
+export async function getAgentEmbedding(agentId: string): Promise<string> {
+  const c = getClient();
+  const agent = await c.agents.retrieve(agentId);
+  return agent.embedding || 'openai/text-embedding-3-small';
+}
+
 export async function getAgentBlockIds(agentId: string): Promise<Array<{ id: string; label: string }>> {
   const c = getClient();
   const blocks: Array<{ id: string; label: string }> = [];
@@ -37,7 +43,10 @@ export async function createWorkerAgent(opts: {
 }): Promise<string> {
   const c = getClient();
 
-  const mainBlocks = await getAgentBlockIds(opts.mainAgentId);
+  const [mainBlocks, embedding] = await Promise.all([
+    getAgentBlockIds(opts.mainAgentId),
+    getAgentEmbedding(opts.mainAgentId),
+  ]);
   const sharedBlockIds = mainBlocks
     .filter(b => b.label === 'persona' || b.label === 'human')
     .map(b => b.id);
@@ -45,7 +54,7 @@ export async function createWorkerAgent(opts: {
   const agent = await c.agents.create({
     name: opts.agentName,
     model: opts.model,
-    embedding: 'openai/text-embedding-3-small',
+    embedding,
     memory_blocks: [
       { label: 'task_context', value: opts.taskPrompt },
     ],

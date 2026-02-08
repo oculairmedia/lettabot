@@ -30,7 +30,7 @@ def spawn_worker(task_description: str, model: str = None, tags: list = None) ->
     import json
     import os
 
-    api_url = os.environ.get("LETTABOT_API_URL", "http://127.0.0.1:8080")
+    api_url = os.environ.get("LETTABOT_API_URL", "http://192.168.50.90:8407")
     agent_id = os.environ.get("LETTA_AGENT_ID", "")
 
     payload = {
@@ -73,7 +73,7 @@ export async function registerWorkerTool(agentId: string): Promise<void> {
   }
 
   if (!existingTools.includes('spawn_worker')) {
-    await client.agents.tools.attach(tool.name ?? 'spawn_worker', { agent_id: agentId });
+    await client.agents.tools.attach(tool.id, { agent_id: agentId });
     console.log(`[Worker] Registered spawn_worker tool on agent ${agentId}`);
   } else {
     console.log('[Worker] spawn_worker tool already attached');

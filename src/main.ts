@@ -612,6 +612,21 @@ async function main() {
     }
   }
   
+  // Initialize worker spawn system if configured
+  if (temporalEnabled) {
+    const workerAgentId = bot.getStatus().agentId;
+    if (workerAgentId) {
+      try {
+        const { initWorkers } = await import('./workers/index.js');
+        await initWorkers(workerAgentId);
+      } catch (error) {
+        console.error('[Worker] Failed to initialize worker system:', error);
+      }
+    } else {
+      console.log('[Worker] Skipping init — agent not yet created (will be created on first message)');
+    }
+  }
+
   // Start all channels
   await bot.start();
   
