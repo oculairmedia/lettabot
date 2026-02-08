@@ -4,15 +4,17 @@
  * Registers workflows and activities, polls the lettabot-background task queue.
  * Runs in-process alongside the bot (started from main.ts).
  *
- * Uses createRequire for workflowsPath since lettabot is ESM but
- * Temporal's workflow bundler needs a require.resolve path.
+ * Uses bundleWorkflowCode to pre-bundle the workflow TypeScript source,
+ * avoiding ESM/CJS conflicts since the project is "type": "module".
  */
 
-import { Worker, NativeConnection } from '@temporalio/worker';
-import { createRequire } from 'node:module';
+import { Worker, NativeConnection, bundleWorkflowCode } from '@temporalio/worker';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import * as activities from './activities.js';
 
-const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS || '192.168.50.90:7233';
 const TASK_QUEUE = process.env.TEMPORAL_TASK_QUEUE || 'lettabot-background';
@@ -21,11 +23,21 @@ let worker: Worker | null = null;
 
 /**
  * Start the Temporal worker.
- * Connects to Temporal server, registers workflows + activities, and polls for tasks.
+ * Pre-bundles workflow code, connects to Temporal server,
+ * registers workflows + activities, and polls for tasks.
  * Returns the worker instance for graceful shutdown.
  */
 export async function startWorker(): Promise<Worker> {
   console.log(`[Temporal Worker] Connecting to Temporal at ${TEMPORAL_ADDRESS}`);
+
+  // Pre-bundle from TypeScript source — webpack handles TS natively,
+  // avoiding the ESM/CJS "exports is not defined" issue with compiled .js
+  const workflowsPath = path.resolve(__dirname, '..', '..', 'src', 'temporal', 'workflows.ts');
+  console.log(`[Temporal Worker] Bundling workflows from: ${workflowsPath}`);
+  const workflowBundle = await bundleWorkflowCode({
+    workflowsPath,
+  });
+  console.log(`[Temporal Worker] Workflow bundle created successfully`);
 
   const connection = await NativeConnection.connect({
     address: TEMPORAL_ADDRESS,
@@ -35,7 +47,7 @@ export async function startWorker(): Promise<Worker> {
     connection,
     namespace: 'default',
     taskQueue: TASK_QUEUE,
-    workflowsPath: require.resolve('../temporal-cjs/workflows'),
+    workflowBundle,
     activities,
   });
 
