@@ -74,6 +74,8 @@ export interface LettaBotConfig {
   };
 
   temporal?: TemporalConfig;
+
+  workers?: import('../workers/types.js').WorkersConfig;
 }
 
 export interface TemporalConfig {

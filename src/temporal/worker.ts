@@ -12,6 +12,7 @@ import { Worker, NativeConnection, bundleWorkflowCode, Runtime } from '@temporal
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import * as activities from './activities.js';
+import * as workerActivities from '../workers/activities.js';
 import type { LettaBot } from '../core/bot.js';
 import { setProcessingLockController } from './activities.js';
 
@@ -44,7 +45,7 @@ export async function startWorker(bot?: LettaBot): Promise<Worker> {
 
   // Pre-bundle from TypeScript source — webpack handles TS natively,
   // avoiding the ESM/CJS "exports is not defined" issue with compiled .js
-  const workflowsPath = path.resolve(__dirname, '..', '..', 'src', 'temporal', 'workflows.ts');
+  const workflowsPath = path.resolve(__dirname, '..', '..', 'src', 'temporal', 'all-workflows.ts');
   console.log(`[Temporal Worker] Bundling workflows from: ${workflowsPath}`);
   const workflowBundle = await bundleWorkflowCode({
     workflowsPath,
@@ -60,11 +61,11 @@ export async function startWorker(bot?: LettaBot): Promise<Worker> {
     namespace: 'default',
     taskQueue: TASK_QUEUE,
     workflowBundle,
-    activities,
+    activities: { ...activities, ...workerActivities },
   });
 
   console.log(`[Temporal Worker] Started on task queue: ${TASK_QUEUE}`);
-  console.log(`[Temporal Worker] Registered workflows: BackgroundTaskWorkflow`);
+  console.log(`[Temporal Worker] Registered workflows: BackgroundTaskWorkflow, WorkerSpawnWorkflow`);
   console.log(`[Temporal Worker] Registered activities: ${Object.keys(activities).filter(k => typeof (activities as Record<string, unknown>)[k] === 'function').join(', ')}`);
 
   // Run in background (non-blocking)
