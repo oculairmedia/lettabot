@@ -589,6 +589,21 @@ async function main() {
     pollingService.start();
   }
   
+  // Start Temporal worker if enabled (for dual-model background tasks)
+  let temporalEnabled = false;
+  if (process.env.TEMPORAL_ENABLED === 'true') {
+    try {
+      const { startWorker } = await import('./temporal/worker.js');
+      await startWorker();
+      temporalEnabled = true;
+      console.log('[Temporal] Worker started — background tasks will use model swap');
+    } catch (error) {
+      console.error('[Temporal] Failed to start worker:', error);
+      console.log('[Temporal] Falling back to direct agent calls (no model swap)');
+      process.env.TEMPORAL_ENABLED = 'false';
+    }
+  }
+  
   // Start all channels
   await bot.start();
   
@@ -624,6 +639,7 @@ async function main() {
   if (config.polling.gmail.enabled) {
     console.log(`  └─ Gmail: ${config.polling.gmail.account}`);
   }
+  console.log(`Temporal: ${temporalEnabled ? `enabled (background model: ${process.env.TEMPORAL_BACKGROUND_MODEL || 'anthropic/haiku-4-5'})` : 'disabled'}`);
   if (config.heartbeat.enabled) {
     console.log(`Heartbeat target: ${config.heartbeat.target ? `${config.heartbeat.target.channel}:${config.heartbeat.target.chatId}` : 'last messaged'}`);
   }
@@ -635,6 +651,17 @@ async function main() {
     groupBatcher.stop();
     heartbeatService?.stop();
     cronService?.stop();
+    pollingService?.stop();
+    if (temporalEnabled) {
+      try {
+        const { stopWorker } = await import('./temporal/worker.js');
+        await stopWorker();
+        const { closeClient } = await import('./temporal/client.js');
+        await closeClient();
+      } catch (e) {
+        console.error('[Temporal] Error during shutdown:', e);
+      }
+    }
     await bot.stop();
     process.exit(0);
   };

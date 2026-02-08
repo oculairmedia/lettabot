@@ -256,6 +256,19 @@ export function configToEnv(config: LettaBotConfig): Record<string, string> {
   if (config.api?.corsOrigin) {
     env.API_CORS_ORIGIN = config.api.corsOrigin;
   }
+
+  if (config.temporal?.enabled) {
+    env.TEMPORAL_ENABLED = 'true';
+    if (config.temporal.address) {
+      env.TEMPORAL_ADDRESS = config.temporal.address;
+    }
+    if (config.temporal.taskQueue) {
+      env.TEMPORAL_TASK_QUEUE = config.temporal.taskQueue;
+    }
+    if (config.temporal.backgroundModel) {
+      env.TEMPORAL_BACKGROUND_MODEL = config.temporal.backgroundModel;
+    }
+  }
   
   return env;
 }

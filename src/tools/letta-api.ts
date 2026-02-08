@@ -116,6 +116,42 @@ export async function updateAgentName(agentId: string, name: string): Promise<bo
 }
 
 /**
+ * Get the current model for an agent.
+ * Returns the full model handle (e.g., "anthropic/sonnet-4-5").
+ */
+export async function getAgentModel(agentId: string): Promise<string | null> {
+  try {
+    const client = getClient();
+    const agent = await client.agents.retrieve(agentId);
+    return (agent as { model?: string }).model || null;
+  } catch (e) {
+    console.error('[Letta API] Failed to get agent model:', e);
+    return null;
+  }
+}
+
+/**
+ * Update an agent's model.
+ * @param agentId - The agent ID
+ * @param model - The model handle (e.g., "anthropic/haiku-4-5")
+ * @returns The previous model handle, or null on failure
+ */
+export async function updateAgentModel(agentId: string, model: string): Promise<string | null> {
+  try {
+    const client = getClient();
+    const agent = await client.agents.retrieve(agentId);
+    const previousModel = (agent as { model?: string }).model || null;
+    
+    await client.agents.update(agentId, { model } as Parameters<typeof client.agents.update>[1]);
+    console.log(`[Letta API] Updated agent model: ${previousModel} -> ${model}`);
+    return previousModel;
+  } catch (e) {
+    console.error('[Letta API] Failed to update agent model:', e);
+    return null;
+  }
+}
+
+/**
  * List available models
  */
 export async function listModels(options?: { providerName?: string; providerCategory?: 'base' | 'byok' }): Promise<Array<{ handle: string; name: string; display_name?: string; tier?: string }>> {

@@ -171,9 +171,19 @@ export class HeartbeatService {
       
       console.log(`[Heartbeat] Sending prompt (SILENT MODE):\n${'─'.repeat(50)}\n${message}\n${'─'.repeat(50)}\n`);
       
-      // Send to agent - response text is NOT delivered (silent mode)
-      // Agent must use `lettabot-message` CLI via Bash to send messages
-      const response = await this.bot.sendToAgent(message, triggerContext);
+      let response: string | undefined;
+      
+      const agentId = process.env.LETTA_AGENT_ID;
+      if (process.env.TEMPORAL_ENABLED === 'true' && agentId) {
+        const { startBackgroundTask } = await import('../temporal/client.js');
+        const result = await startBackgroundTask(agentId, message, 'heartbeat');
+        response = result?.response ?? undefined;
+        if (result && !result.success) {
+          console.warn(`[Heartbeat] Temporal workflow failed: ${result.error}`);
+        }
+      } else {
+        response = await this.bot.sendToAgent(message, triggerContext);
+      }
       
       // Log results
       console.log(`[Heartbeat] Agent finished.`);

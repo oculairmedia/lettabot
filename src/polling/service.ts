@@ -186,7 +186,20 @@ export class PollingService {
         'Review and summarize important emails. Use `lettabot-message send --text "..."` to notify the user if needed.',
       ].join('\n');
       
-      const response = await this.bot.sendToAgent(message);
+      let response: string | undefined;
+      
+      // Use Temporal workflow for model swap if enabled, otherwise direct call
+      const agentId = process.env.LETTA_AGENT_ID;
+      if (process.env.TEMPORAL_ENABLED === 'true' && agentId) {
+        const { startBackgroundTask } = await import('../temporal/client.js');
+        const result = await startBackgroundTask(agentId, message, 'email-poll');
+        response = result?.response ?? undefined;
+        if (result && !result.success) {
+          console.warn(`[Polling] 📧 Temporal workflow failed: ${result.error}`);
+        }
+      } else {
+        response = await this.bot.sendToAgent(message);
+      }
       
       // Log response but do NOT auto-deliver (silent mode)
       console.log(`[Polling] 📧 Agent finished (SILENT MODE)`);

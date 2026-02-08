@@ -366,9 +366,19 @@ export class CronService {
         `Current time: ${formattedTime} (${timezone})`,
       ].join('\n');
       
-      // Send message to agent (SILENT MODE - response NOT auto-delivered)
-      // Agent must use `lettabot-message` CLI to send messages explicitly
-      const response = await this.bot.sendToAgent(messageWithMetadata);
+      let response: string | undefined;
+      
+      const agentId = process.env.LETTA_AGENT_ID;
+      if (process.env.TEMPORAL_ENABLED === 'true' && agentId) {
+        const { startBackgroundTask } = await import('../temporal/client.js');
+        const result = await startBackgroundTask(agentId, messageWithMetadata, `cron-${job.id}`);
+        response = result?.response ?? undefined;
+        if (result && !result.success) {
+          console.warn(`[Cron] Temporal workflow failed for ${job.name}: ${result.error}`);
+        }
+      } else {
+        response = await this.bot.sendToAgent(messageWithMetadata);
+      }
       
       // Update state
       job.state.lastRunAt = new Date();

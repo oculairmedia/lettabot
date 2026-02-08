@@ -72,6 +72,15 @@ export interface LettaBotConfig {
     host?: string;       // Default: 127.0.0.1 (secure). Use '0.0.0.0' for Docker/Railway
     corsOrigin?: string; // CORS origin. Default: same-origin only
   };
+
+  temporal?: TemporalConfig;
+}
+
+export interface TemporalConfig {
+  enabled: boolean;
+  address?: string;
+  taskQueue?: string;
+  backgroundModel?: string;
 }
 
 export interface TranscriptionConfig {
