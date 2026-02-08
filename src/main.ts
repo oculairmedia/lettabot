@@ -602,7 +602,7 @@ async function main() {
   if (process.env.TEMPORAL_ENABLED === 'true') {
     try {
       const { startWorker } = await import('./temporal/worker.js');
-      await startWorker();
+      await startWorker(bot);
       temporalEnabled = true;
       console.log('[Temporal] Worker started — background tasks will use model swap');
     } catch (error) {
@@ -647,7 +647,7 @@ async function main() {
   if (config.polling.gmail.enabled) {
     console.log(`  └─ Gmail: ${config.polling.gmail.account}`);
   }
-  console.log(`Temporal: ${temporalEnabled ? `enabled (background model: ${process.env.TEMPORAL_BACKGROUND_MODEL || 'anthropic/haiku-4-5'})` : 'disabled'}`);
+  console.log(`Temporal: ${temporalEnabled ? `enabled (background model: ${process.env.TEMPORAL_BACKGROUND_MODEL || 'openai-proxy/gpt51'})` : 'disabled'}`);
   if (config.heartbeat.enabled) {
     console.log(`Heartbeat target: ${config.heartbeat.target ? `${config.heartbeat.target.channel}:${config.heartbeat.target.chatId}` : 'last messaged'}`);
   }

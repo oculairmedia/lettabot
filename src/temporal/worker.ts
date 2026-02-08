@@ -12,6 +12,8 @@ import { Worker, NativeConnection, bundleWorkflowCode, Runtime } from '@temporal
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import * as activities from './activities.js';
+import type { LettaBot } from '../core/bot.js';
+import { setProcessingLockController } from './activities.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,7 +29,7 @@ let worker: Worker | null = null;
  * registers workflows + activities, and polls for tasks.
  * Returns the worker instance for graceful shutdown.
  */
-export async function startWorker(): Promise<Worker> {
+export async function startWorker(bot?: LettaBot): Promise<Worker> {
   // Disable worker heartbeating — requires Temporal server ≥1.29.1 (we run 1.22.4).
   // See issue lb-2ry for the server upgrade plan.
   Runtime.install({
@@ -35,6 +37,10 @@ export async function startWorker(): Promise<Worker> {
   });
 
   console.log(`[Temporal Worker] Connecting to Temporal at ${TEMPORAL_ADDRESS}`);
+
+  if (bot) {
+    setProcessingLockController(bot);
+  }
 
   // Pre-bundle from TypeScript source — webpack handles TS natively,
   // avoiding the ESM/CJS "exports is not defined" issue with compiled .js
@@ -82,4 +88,5 @@ export async function stopWorker(): Promise<void> {
     }
     worker = null;
   }
+  setProcessingLockController(null);
 }

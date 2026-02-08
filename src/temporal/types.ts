@@ -3,6 +3,9 @@ export interface BackgroundTaskInput {
   message: string;
   taskType: string;
   backgroundModel: string;
+  conversationId: string | null;
+  allowedTools: string[];
+  cwd: string;
 }
 
 export interface BackgroundTaskResult {

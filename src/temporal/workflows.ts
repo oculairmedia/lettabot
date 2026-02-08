@@ -1,11 +1,10 @@
 /**
  * Background Task Workflow
  *
- * Wraps background tasks (email polling, heartbeats, cron) with a model swap:
- * 1. Save original model (Sonnet 4.5)
- * 2. Swap to cheap model (Haiku 4.5)
- * 3. Execute the background task
- * 4. Restore original model (guaranteed via compensating transactions)
+ * Wraps background tasks (email polling, heartbeats, cron) with durable
+ * execution and model restoration:
+ * 1. Execute the background task through Letta Code SDK on Haiku
+ * 2. Restore original model in a compensation step
  *
  * The compensating transaction pattern ensures the model is ALWAYS restored,
  * even if the process crashes mid-task. Temporal's durable execution
@@ -21,10 +20,7 @@ import {
 import type * as activities from './activities';
 
 // Proxy activities with retry policies
-const {
-  swapAgentModel,
-  executeBackgroundTask,
-} = proxyActivities<typeof activities>({
+const { executeBackgroundTask } = proxyActivities<typeof activities>({
   startToCloseTimeout: '120 seconds',
   retry: {
     initialInterval: '2 seconds',
@@ -64,14 +60,14 @@ export const statusQuery = defineQuery<{
  * BackgroundTaskWorkflow
  *
  * Compensating transaction pattern:
- * - Before swapping, register restore as compensation
- * - On success OR failure, model is always restored
+ * - Execute task through SDK with local tool access
+ * - Restore model on success OR failure
  * - Temporal guarantees this runs even after crashes
  */
 export async function BackgroundTaskWorkflow(
   input: BackgroundTaskInput,
 ): Promise<BackgroundTaskResult> {
-  const { agentId, message, taskType, backgroundModel } = input;
+  const { agentId, message, taskType, backgroundModel, conversationId, allowedTools, cwd } = input;
 
   let phase = 'initializing';
   let originalModel = '';
@@ -87,26 +83,21 @@ export async function BackgroundTaskWorkflow(
   console.log(`[BackgroundTaskWorkflow] Starting: type=${taskType}, agent=${agentId}, model=${backgroundModel}`);
 
   try {
-    // Phase 1: Swap to background model
-    phase = 'swapping-model';
-    const swapResult = await swapAgentModel({
-      agentId,
-      targetModel: backgroundModel,
-    });
-    originalModel = swapResult.previousModel;
-
-    console.log(`[BackgroundTaskWorkflow] Model swapped: ${originalModel} -> ${backgroundModel}`);
-
-    // Phase 2: Execute the background task
+    // Phase 1: Execute the background task through SDK
     phase = 'executing-task';
     const taskResult = await executeBackgroundTask({
       agentId,
       message,
+      conversationId,
+      backgroundModel,
+      allowedTools,
+      cwd,
     });
+    originalModel = taskResult.originalModel;
 
     console.log(`[BackgroundTaskWorkflow] Task completed: type=${taskType}`);
 
-    // Phase 3: Restore original model (success path)
+    // Phase 2: Restore original model (success path)
     phase = 'restoring-model';
     await restoreAgentModel({
       agentId,

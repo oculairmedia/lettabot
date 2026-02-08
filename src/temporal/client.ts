@@ -10,7 +10,7 @@ import type { BackgroundTaskInput, BackgroundTaskResult } from './types.js';
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS || '192.168.50.90:7233';
 const TASK_QUEUE = process.env.TEMPORAL_TASK_QUEUE || 'lettabot-background';
-const BACKGROUND_MODEL = process.env.TEMPORAL_BACKGROUND_MODEL || 'anthropic/haiku-4-5';
+const BACKGROUND_MODEL = process.env.TEMPORAL_BACKGROUND_MODEL || 'openai-proxy/gpt51';
 
 let client: Client | null = null;
 
@@ -40,12 +40,18 @@ async function getClient(): Promise<Client> {
  * @param agentId - The Letta agent ID
  * @param message - The message to send to the agent
  * @param taskType - Task type identifier (e.g. 'email-poll', 'heartbeat', 'cron-daily')
+ * @param conversationId - Shared conversation ID to resume
+ * @param allowedTools - Tool whitelist for SDK session
+ * @param cwd - Working directory for SDK session
  * @returns The workflow result with response text, or null on error
  */
 export async function startBackgroundTask(
   agentId: string,
   message: string,
   taskType: string,
+  conversationId: string | null,
+  allowedTools: string[],
+  cwd: string,
 ): Promise<BackgroundTaskResult | null> {
   try {
     const c = await getClient();
@@ -62,6 +68,9 @@ export async function startBackgroundTask(
           message,
           taskType,
           backgroundModel: BACKGROUND_MODEL,
+          conversationId,
+          allowedTools,
+          cwd,
         }],
       },
     );

@@ -371,7 +371,16 @@ export class CronService {
       const agentId = process.env.LETTA_AGENT_ID;
       if (process.env.TEMPORAL_ENABLED === 'true' && agentId) {
         const { startBackgroundTask } = await import('../temporal/client.js');
-        const result = await startBackgroundTask(agentId, messageWithMetadata, `cron-${job.id}`);
+        const conversationId = this.bot.getConversationId();
+        const backgroundTaskConfig = this.bot.getBackgroundTaskConfig();
+        const result = await startBackgroundTask(
+          agentId,
+          messageWithMetadata,
+          `cron-${job.id}`,
+          conversationId,
+          backgroundTaskConfig.allowedTools,
+          backgroundTaskConfig.cwd,
+        );
         response = result?.response ?? undefined;
         if (result && !result.success) {
           console.warn(`[Cron] Temporal workflow failed for ${job.name}: ${result.error}`);

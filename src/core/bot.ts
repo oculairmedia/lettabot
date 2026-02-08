@@ -1075,4 +1075,45 @@ export class LettaBot {
   getLastUserMessageTime(): Date | null {
     return this.lastUserMessageTime;
   }
+
+  /**
+   * Get the active conversation ID for background task routing.
+   */
+  getConversationId(): string | null {
+    return this.store.conversationId;
+  }
+
+  /**
+   * Get SDK options required for background task sessions.
+   */
+  getBackgroundTaskConfig(): { allowedTools: string[]; cwd: string } {
+    return {
+      allowedTools: this.config.allowedTools,
+      cwd: this.config.workingDir,
+    };
+  }
+
+  /**
+   * Acquire the processing lock used to serialize SDK sends.
+   */
+  async acquireProcessingLock(timeoutMs = 30000): Promise<boolean> {
+    const startedAt = Date.now();
+    while (this.processing) {
+      if (Date.now() - startedAt >= timeoutMs) {
+        return false;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    this.processing = true;
+    return true;
+  }
+
+  /**
+   * Release the processing lock and resume queued message handling.
+   */
+  releaseProcessingLock(): void {
+    this.processing = false;
+    this.processQueue();
+  }
 }
