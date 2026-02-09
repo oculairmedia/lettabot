@@ -146,7 +146,8 @@ export interface TelegramConfig {
   token?: string;
   dmPolicy?: 'pairing' | 'allowlist' | 'open';
   allowedUsers?: string[];
-  groupPollIntervalMin?: number;  // Batch interval in minutes (default: 10, 0 = immediate)
+  groupDebounceSec?: number;      // Debounce interval in seconds (default: 5, 0 = immediate)
+  groupPollIntervalMin?: number;  // @deprecated Use groupDebounceSec instead
   instantGroups?: string[];       // Group chat IDs that bypass batching
 }
 
@@ -156,7 +157,8 @@ export interface SlackConfig {
   botToken?: string;
   dmPolicy?: 'pairing' | 'allowlist' | 'open';
   allowedUsers?: string[];
-  groupPollIntervalMin?: number;  // Batch interval in minutes (default: 10, 0 = immediate)
+  groupDebounceSec?: number;      // Debounce interval in seconds (default: 5, 0 = immediate)
+  groupPollIntervalMin?: number;  // @deprecated Use groupDebounceSec instead
   instantGroups?: string[];       // Channel IDs that bypass batching
 }
 
@@ -169,7 +171,8 @@ export interface WhatsAppConfig {
   groupAllowFrom?: string[];
   mentionPatterns?: string[];
   groups?: Record<string, { requireMention?: boolean }>;
-  groupPollIntervalMin?: number;  // Batch interval in minutes (default: 10, 0 = immediate)
+  groupDebounceSec?: number;      // Debounce interval in seconds (default: 5, 0 = immediate)
+  groupPollIntervalMin?: number;  // @deprecated Use groupDebounceSec instead
   instantGroups?: string[];       // Group JIDs that bypass batching
 }
 
@@ -182,7 +185,8 @@ export interface SignalConfig {
   // Group gating
   mentionPatterns?: string[];  // Regex patterns for mention detection (e.g., ["@bot"])
   groups?: Record<string, { requireMention?: boolean }>;  // Per-group settings, "*" for defaults
-  groupPollIntervalMin?: number;  // Batch interval in minutes (default: 10, 0 = immediate)
+  groupDebounceSec?: number;      // Debounce interval in seconds (default: 5, 0 = immediate)
+  groupPollIntervalMin?: number;  // @deprecated Use groupDebounceSec instead
   instantGroups?: string[];       // Group IDs that bypass batching
 }
 
@@ -191,7 +195,8 @@ export interface DiscordConfig {
   token?: string;
   dmPolicy?: 'pairing' | 'allowlist' | 'open';
   allowedUsers?: string[];
-  groupPollIntervalMin?: number;  // Batch interval in minutes (default: 10, 0 = immediate)
+  groupDebounceSec?: number;      // Debounce interval in seconds (default: 5, 0 = immediate)
+  groupPollIntervalMin?: number;  // @deprecated Use groupDebounceSec instead
   instantGroups?: string[];       // Guild/server IDs or channel IDs that bypass batching
 }
 

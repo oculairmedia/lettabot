@@ -347,42 +347,53 @@ function createChannelsForAgent(
 }
 
 /**
+ * Resolve group debounce value to milliseconds.
+ * Prefers groupDebounceSec, falls back to deprecated groupPollIntervalMin.
+ * Default: 5 seconds (5000ms).
+ */
+function resolveDebounceMs(channel: { groupDebounceSec?: number; groupPollIntervalMin?: number }): number {
+  if (channel.groupDebounceSec !== undefined) return channel.groupDebounceSec * 1000;
+  if (channel.groupPollIntervalMin !== undefined) return channel.groupPollIntervalMin * 60 * 1000;
+  return 5000; // 5 seconds default
+}
+
+/**
  * Create and configure a group batcher for an agent
  */
 function createGroupBatcher(
   agentConfig: import('./config/types.js').AgentConfig,
   bot: import('./core/interfaces.js').AgentSession,
 ): { batcher: GroupBatcher | null; intervals: Map<string, number>; instantIds: Set<string> } {
-  const intervals = new Map<string, number>();
+  const intervals = new Map<string, number>(); // channel -> debounce ms
   const instantIds = new Set<string>();
 
-  // Collect intervals from channel configs
+  // Collect debounce intervals from channel configs (stored as ms)
   if (agentConfig.channels.telegram) {
-    intervals.set('telegram', agentConfig.channels.telegram.groupPollIntervalMin ?? 10);
+    intervals.set('telegram', resolveDebounceMs(agentConfig.channels.telegram));
     for (const id of agentConfig.channels.telegram.instantGroups || []) {
       instantIds.add(`telegram:${id}`);
     }
   }
   if (agentConfig.channels.slack) {
-    intervals.set('slack', agentConfig.channels.slack.groupPollIntervalMin ?? 10);
+    intervals.set('slack', resolveDebounceMs(agentConfig.channels.slack));
     for (const id of agentConfig.channels.slack.instantGroups || []) {
       instantIds.add(`slack:${id}`);
     }
   }
   if (agentConfig.channels.whatsapp) {
-    intervals.set('whatsapp', agentConfig.channels.whatsapp.groupPollIntervalMin ?? 10);
+    intervals.set('whatsapp', resolveDebounceMs(agentConfig.channels.whatsapp));
     for (const id of agentConfig.channels.whatsapp.instantGroups || []) {
       instantIds.add(`whatsapp:${id}`);
     }
   }
   if (agentConfig.channels.signal) {
-    intervals.set('signal', agentConfig.channels.signal.groupPollIntervalMin ?? 10);
+    intervals.set('signal', resolveDebounceMs(agentConfig.channels.signal));
     for (const id of agentConfig.channels.signal.instantGroups || []) {
       instantIds.add(`signal:${id}`);
     }
   }
   if (agentConfig.channels.discord) {
-    intervals.set('discord', agentConfig.channels.discord.groupPollIntervalMin ?? 10);
+    intervals.set('discord', resolveDebounceMs(agentConfig.channels.discord));
     for (const id of agentConfig.channels.discord.instantGroups || []) {
       instantIds.add(`discord:${id}`);
     }

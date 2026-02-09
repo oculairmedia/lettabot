@@ -306,9 +306,9 @@ export class LettaBot implements AgentSession {
       // Check if this group is configured for instant processing
       const isInstant = this.instantGroupIds.has(`${msg.channel}:${msg.chatId}`)
         || (msg.serverId && this.instantGroupIds.has(`${msg.channel}:${msg.serverId}`));
-      const intervalMin = isInstant ? 0 : (this.groupIntervals.get(msg.channel) ?? 10);
-      console.log(`[Bot] Group message routed to batcher (interval=${intervalMin}min, mentioned=${msg.wasMentioned}, instant=${!!isInstant})`);
-      this.groupBatcher.enqueue(msg, adapter, intervalMin);
+      const debounceMs = isInstant ? 0 : (this.groupIntervals.get(msg.channel) ?? 5000);
+      console.log(`[Bot] Group message routed to batcher (debounce=${debounceMs}ms, mentioned=${msg.wasMentioned}, instant=${!!isInstant})`);
+      this.groupBatcher.enqueue(msg, adapter, debounceMs);
       return;
     }
 

@@ -1,7 +1,7 @@
 /**
  * Group Message Batcher
  *
- * Buffers group chat messages and flushes them periodically or on @mention.
+ * Debounces group chat messages and flushes after a quiet period or on @mention.
  * Channel-agnostic: works with any ChannelAdapter.
  */
 
@@ -27,10 +27,10 @@ export class GroupBatcher {
   /**
    * Add a group message to the buffer.
    * If wasMentioned, flush immediately.
-   * If intervalMin is 0, flush on every message (no batching).
-   * Otherwise, start a timer on the first message (does NOT reset on subsequent messages).
+   * If debounceMs is 0, flush on every message (no batching).
+   * Otherwise, debounce: reset timer on every message, flush after quiet period.
    */
-  enqueue(msg: InboundMessage, adapter: ChannelAdapter, intervalMin: number): void {
+  enqueue(msg: InboundMessage, adapter: ChannelAdapter, debounceMs: number): void {
     const key = `${msg.channel}:${msg.chatId}`;
 
     let entry = this.buffer.get(key);
@@ -42,19 +42,19 @@ export class GroupBatcher {
     entry.messages.push(msg);
     entry.adapter = adapter; // Update adapter reference
 
-    // Immediate flush: @mention or intervalMin=0
-    if (msg.wasMentioned || intervalMin === 0) {
+    // Immediate flush: @mention or debounceMs=0
+    if (msg.wasMentioned || debounceMs === 0) {
       this.flush(key);
       return;
     }
 
-    // Start timer on first message only (don't reset to prevent starvation)
-    if (!entry.timer) {
-      const ms = intervalMin * 60 * 1000;
-      entry.timer = setTimeout(() => {
-        this.flush(key);
-      }, ms);
+    // Debounce: reset timer on every message
+    if (entry.timer) {
+      clearTimeout(entry.timer);
     }
+    entry.timer = setTimeout(() => {
+      this.flush(key);
+    }, debounceMs);
   }
 
   /**
