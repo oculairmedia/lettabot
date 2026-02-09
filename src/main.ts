@@ -21,6 +21,9 @@ const yamlConfig = loadConfig();
 const configSource = existsSync(resolveConfigPath()) ? resolveConfigPath() : 'defaults + environment variables';
 console.log(`[Config] Loaded from ${configSource}`);
 console.log(`[Config] Mode: ${yamlConfig.server.mode}, Agent: ${yamlConfig.agent.name}`);
+if (yamlConfig.agent.model) {
+  console.warn('[Config] WARNING: agent.model in lettabot.yaml is deprecated and ignored. Use `lettabot model set <handle>` instead.');
+}
 applyConfigToEnv(yamlConfig);
 
 // Sync BYOK providers on startup (async, don't block)

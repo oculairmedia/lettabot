@@ -31,7 +31,6 @@ describe.skipIf(SKIP_E2E)('e2e: LettaBot with Letta Cloud', () => {
     
     // Initialize bot with test config
     bot = new LettaBot({
-      model: 'claude-sonnet-4-20250514', // Good balance of speed/quality
       workingDir: tempDir,
       agentName: 'e2e-test',
     });
