@@ -6,6 +6,42 @@
  * 2. Letta Cloud: Uses apiKey, optional BYOK providers
  */
 
+/**
+ * Configuration for a single agent in multi-agent mode.
+ * Each agent has its own name, channels, and features.
+ */
+export interface AgentConfig {
+  /** Agent name (used for display, agent creation, and store keying) */
+  name: string;
+  /** Use existing agent ID (skip creation) */
+  id?: string;
+  /** Model for initial agent creation */
+  model?: string;
+  /** Channels this agent connects to */
+  channels: {
+    telegram?: TelegramConfig;
+    slack?: SlackConfig;
+    whatsapp?: WhatsAppConfig;
+    signal?: SignalConfig;
+    discord?: DiscordConfig;
+  };
+  /** Features for this agent */
+  features?: {
+    cron?: boolean;
+    heartbeat?: {
+      enabled: boolean;
+      intervalMin?: number;
+    };
+    maxToolCalls?: number;
+  };
+  /** Polling config */
+  polling?: PollingYamlConfig;
+  /** Integrations */
+  integrations?: {
+    google?: GoogleConfig;
+  };
+}
+
 export interface LettaBotConfig {
   // Server connection
   server: {
@@ -16,6 +52,9 @@ export interface LettaBotConfig {
     // Only for cloud mode
     apiKey?: string;
   };
+
+  // Multi-agent configuration
+  agents?: AgentConfig[];
 
   // Agent configuration
   agent: {
@@ -168,3 +207,62 @@ export const DEFAULT_CONFIG: LettaBotConfig = {
   },
   channels: {},
 };
+
+/**
+ * Normalize config to multi-agent format.
+ *
+ * If the config uses legacy single-agent format (agent: + channels:),
+ * it's converted to an agents[] array with one entry.
+ * Channels with `enabled: false` are dropped during normalization.
+ */
+export function normalizeAgents(config: LettaBotConfig): AgentConfig[] {
+  const normalizeChannels = (channels?: AgentConfig['channels']): AgentConfig['channels'] => {
+    const normalized: AgentConfig['channels'] = {};
+    if (!channels) return normalized;
+
+    if (channels.telegram?.enabled !== false && channels.telegram?.token) {
+      normalized.telegram = channels.telegram;
+    }
+    if (channels.slack?.enabled !== false && channels.slack?.botToken && channels.slack?.appToken) {
+      normalized.slack = channels.slack;
+    }
+    // WhatsApp has no credential to check (uses QR pairing), so just check enabled
+    if (channels.whatsapp?.enabled) {
+      normalized.whatsapp = channels.whatsapp;
+    }
+    if (channels.signal?.enabled !== false && channels.signal?.phone) {
+      normalized.signal = channels.signal;
+    }
+    if (channels.discord?.enabled !== false && channels.discord?.token) {
+      normalized.discord = channels.discord;
+    }
+
+    return normalized;
+  };
+
+  // Multi-agent mode: normalize channels for each configured agent
+  if (config.agents && config.agents.length > 0) {
+    return config.agents.map(agent => ({
+      ...agent,
+      channels: normalizeChannels(agent.channels),
+    }));
+  }
+
+  // Legacy single-agent mode: normalize to agents[]
+  const agentName = config.agent?.name || 'LettaBot';
+  const model = config.agent?.model;
+  const id = config.agent?.id;
+
+  // Filter out disabled/misconfigured channels
+  const channels = normalizeChannels(config.channels);
+
+  return [{
+    name: agentName,
+    id,
+    model,
+    channels,
+    features: config.features,
+    polling: config.polling,
+    integrations: config.integrations,
+  }];
+}
