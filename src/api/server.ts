@@ -17,11 +17,16 @@ const MAX_BODY_SIZE = 10 * 1024; // 10KB
 const MAX_TEXT_LENGTH = 10000; // 10k chars
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
+interface UpgradeHandler {
+  handleUpgrade(req: http.IncomingMessage, socket: import('stream').Duplex, head: Buffer): boolean;
+}
+
 interface ServerOptions {
   port: number;
   apiKey: string;
-  host?: string; // Bind address (default: 127.0.0.1 for security)
-  corsOrigin?: string; // CORS origin (default: same-origin only)
+  host?: string;
+  corsOrigin?: string;
+  upgradeHandlers?: UpgradeHandler[];
 }
 
 /**
@@ -236,8 +241,15 @@ export function createApiServer(bot: LettaBot, options: ServerOptions): http.Ser
     sendError(res, 404, 'Not found');
   });
 
-  // Bind to localhost by default for security (prevents network exposure on bare metal)
-  // Use API_HOST=0.0.0.0 in Docker to expose on all interfaces
+  if (options.upgradeHandlers?.length) {
+    server.on('upgrade', (req, socket, head) => {
+      for (const handler of options.upgradeHandlers!) {
+        if (handler.handleUpgrade(req, socket, head)) return;
+      }
+      socket.destroy();
+    });
+  }
+
   const host = options.host || '127.0.0.1';
   server.listen(options.port, host, () => {
     console.log(`[API] Server listening on ${host}:${options.port}`);

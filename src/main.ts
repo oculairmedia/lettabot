@@ -634,16 +634,25 @@ async function main() {
   const apiKey = loadOrGenerateApiKey();
   console.log(`[API] Key: ${apiKey.slice(0, 8)}... (set LETTABOT_API_KEY to customize)`);
 
-  // Start API server (replaces health server, includes health checks)
-  // Provides endpoints for CLI to send messages across Docker boundaries
+  // Start API server
   const apiPort = parseInt(process.env.PORT || '8080', 10);
-  const apiHost = process.env.API_HOST; // undefined = 127.0.0.1 (secure default)
-  const apiCorsOrigin = process.env.API_CORS_ORIGIN; // undefined = same-origin only
+  const apiHost = process.env.API_HOST;
+  const apiCorsOrigin = process.env.API_CORS_ORIGIN;
+
+  let wsGateway: import('./api/ws-gateway.js').WsGateway | null = null;
+  const gatewayEnabled = process.env.GATEWAY_ENABLED === 'true';
+
+  if (gatewayEnabled) {
+    const { WsGateway } = await import('./api/ws-gateway.js');
+    wsGateway = new WsGateway({ apiKey });
+  }
+
   const apiServer = createApiServer(bot, {
     port: apiPort,
     apiKey: apiKey,
     host: apiHost,
     corsOrigin: apiCorsOrigin,
+    upgradeHandlers: wsGateway ? [wsGateway] : undefined,
   });
   
   // Log status
@@ -663,6 +672,9 @@ async function main() {
     console.log(`  └─ Gmail: ${config.polling.gmail.account}`);
   }
   console.log(`Temporal: ${temporalEnabled ? `enabled (background model: ${process.env.TEMPORAL_BACKGROUND_MODEL || 'openai-proxy/gpt51'})` : 'disabled'}`);
+  if (gatewayEnabled) {
+    console.log(`Gateway: enabled (ws://${apiHost || '127.0.0.1'}:${apiPort}/api/v1/agent-gateway)`);
+  }
   if (config.heartbeat.enabled) {
     console.log(`Heartbeat target: ${config.heartbeat.target ? `${config.heartbeat.target.channel}:${config.heartbeat.target.chatId}` : 'last messaged'}`);
   }
@@ -675,6 +687,9 @@ async function main() {
     heartbeatService?.stop();
     cronService?.stop();
     pollingService?.stop();
+    if (wsGateway) {
+      await wsGateway.shutdown();
+    }
     if (temporalEnabled) {
       try {
         const { stopWorker } = await import('./temporal/worker.js');

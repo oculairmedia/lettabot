@@ -66,6 +66,7 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "update-notifier": "^7.3.1",
+    "ws": "^8.19.0",
     "yaml": "^2.8.2"
   },
   "optionalDependencies": {
@@ -75,6 +76,7 @@
   },
   "devDependencies": {
     "@types/update-notifier": "^6.0.8",
+    "@types/ws": "^8.18.1",
     "vitest": "^4.0.18"
   },
   "overrides": {
