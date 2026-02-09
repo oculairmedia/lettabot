@@ -10,7 +10,7 @@ import type { ChannelAdapter } from '../channels/types.js';
 import type { BotConfig, InboundMessage, TriggerContext } from './types.js';
 import type { AgentSession } from './interfaces.js';
 import { Store } from './store.js';
-import { updateAgentName, getPendingApprovals, rejectApproval, cancelRuns, recoverOrphanedConversationApproval } from '../tools/letta-api.js';
+import { updateAgentName, getPendingApprovals, rejectApproval, cancelRuns, recoverOrphanedConversationApproval, ensureNoToolApprovals } from '../tools/letta-api.js';
 import { installSkillsToAgent } from '../skills/loader.js';
 import { formatMessageEnvelope, formatGroupBatchEnvelope, type SessionContextOptions } from './formatter.js';
 import type { GroupBatcher } from './group-batcher.js';
@@ -86,6 +86,8 @@ export class LettaBot implements AgentSession {
   private channels: Map<string, ChannelAdapter> = new Map();
   private messageQueue: Array<{ msg: InboundMessage; adapter: ChannelAdapter }> = [];
   private lastUserMessageTime: Date | null = null;
+  private lastApprovalCheckAt: number | null = null;
+  private static readonly APPROVAL_CHECK_REFRESH_MS = 5 * 60 * 1000;
   
   // Callback to trigger heartbeat (set by main.ts)
   public onTriggerHeartbeat?: () => Promise<void>;
@@ -104,6 +106,20 @@ export class LettaBot implements AgentSession {
     this.store = new Store('lettabot-agent.json', config.agentName);
     
     console.log(`LettaBot initialized. Agent ID: ${this.store.agentId || '(new)'}`);
+    if (this.store.agentId) {
+      this.ensureApprovalsDisabled(this.store.agentId, true).catch((err) => {
+        console.warn('[Bot] Failed to verify tool approvals on startup:', err);
+      });
+    }
+  }
+
+  private async ensureApprovalsDisabled(agentId: string, force = false): Promise<void> {
+    const now = Date.now();
+    if (!force && this.lastApprovalCheckAt && (now - this.lastApprovalCheckAt) < LettaBot.APPROVAL_CHECK_REFRESH_MS) {
+      return;
+    }
+    await ensureNoToolApprovals(agentId);
+    this.lastApprovalCheckAt = now;
   }
   
   /**
@@ -301,6 +317,15 @@ export class LettaBot implements AgentSession {
   private async handleMessage(msg: InboundMessage, adapter: ChannelAdapter): Promise<void> {
     console.log(`[${msg.channel}] Message from ${msg.userId}: ${msg.text}`);
 
+    // Self-echo guard for Matrix bridge identities (our own agent speaking back into room)
+    if (msg.channel === 'matrix' && this.store.agentId) {
+      const ownAgentLocalpart = `agent_${this.store.agentId.replace(/^agent-/, '').replace(/-/g, '_')}`;
+      if (msg.userId.startsWith(`@${ownAgentLocalpart}:`)) {
+        console.log(`[Bot] Skipping self-echo from own agent MXID: ${msg.userId}`);
+        return;
+      }
+    }
+
     // Route group messages to batcher if configured
     if (msg.isGroup && this.groupBatcher) {
       // Check if this group is configured for instant processing
@@ -357,6 +382,10 @@ export class LettaBot implements AgentSession {
    */
   private async processMessage(msg: InboundMessage, adapter: ChannelAdapter, retried = false): Promise<void> {
     console.log('[Bot] Starting processMessage');
+    const isInterAgentMessage = msg.channel === 'matrix' && /^@(agent_|oc_)[a-z0-9_-]+:/i.test(msg.userId);
+    if (isInterAgentMessage) {
+      console.log(`[Bot] Inter-agent message detected from ${msg.userId}; running in silent mode`);
+    }
     // Track when user last sent a message (for heartbeat skip logic)
     this.lastUserMessageTime = new Date();
     
@@ -385,6 +414,11 @@ export class LettaBot implements AgentSession {
     }
     if (recovery.recovered) {
       console.log('[Bot] Recovered from stuck approval, continuing with message processing');
+    }
+    if (this.store.agentId) {
+      await this.ensureApprovalsDisabled(this.store.agentId).catch((err) => {
+        console.warn('[Bot] Failed to verify tool approvals before message processing:', err);
+      });
     }
     
     // Create or resume session
@@ -427,6 +461,9 @@ export class LettaBot implements AgentSession {
         const newAgentId = await createAgent({
           systemPrompt: SYSTEM_PROMPT,
           memory: loadMemoryBlocks(this.config.agentName),
+        });
+        await this.ensureApprovalsDisabled(newAgentId, true).catch((err) => {
+          console.warn('[Bot] Failed to disable tool approvals on new agent:', err);
         });
         session = createSession(newAgentId, baseOptions);
       }
@@ -527,6 +564,16 @@ export class LettaBot implements AgentSession {
         if (response.trim() === '<no-reply/>') {
           console.log('[Bot] Agent chose not to reply (no-reply marker)');
           sentAnyMessage = true;
+          response = '';
+          messageId = null;
+          lastUpdate = Date.now();
+          return;
+        }
+        if (isInterAgentMessage) {
+          if (response.trim()) {
+            console.log('[Bot] Silent mode active for inter-agent message chunk; not posting response to channel');
+            sentAnyMessage = true;
+          }
           response = '';
           messageId = null;
           lastUpdate = Date.now();
@@ -687,7 +734,11 @@ export class LettaBot implements AgentSession {
                   updateAgentName(session.agentId, this.config.agentName).catch(() => {});
                 }
                 if (session.agentId) {
-                  installSkillsToAgent(session.agentId, this.config.skills);
+                  const newAgentId = session.agentId;
+                  installSkillsToAgent(newAgentId, this.config.skills);
+                  this.ensureApprovalsDisabled(newAgentId, true).catch((err) => {
+                    console.warn('[Bot] Failed to verify tool approvals on new agent after skill install:', err);
+                  });
                 }
               }
             } else if (session.conversationId && session.conversationId !== this.store.conversationId) {
@@ -716,7 +767,7 @@ export class LettaBot implements AgentSession {
       }
 
       // Send final response
-      if (response.trim()) {
+      if (response.trim() && !isInterAgentMessage) {
         try {
           if (messageId) {
             await adapter.editMessage(msg.chatId, messageId, response);
@@ -741,16 +792,21 @@ export class LettaBot implements AgentSession {
             console.error('[Bot] Retry send also failed:', retryError);
           }
         }
+      } else if (response.trim() && isInterAgentMessage) {
+        console.log('[Bot] Silent mode active for inter-agent message; not posting response to channel');
+        sentAnyMessage = true;
       }
       
       // Only show "no response" if we never sent anything
-      if (!sentAnyMessage) {
+      if (!sentAnyMessage && !isInterAgentMessage) {
         if (!receivedAnyData) {
           // Stream timed out with NO data at all - likely stuck state
           console.error('[Bot] Stream received NO DATA - possible stuck state');
           console.error('[Bot] Agent:', this.store.agentId);
           console.error('[Bot] Conversation:', this.store.conversationId);
           console.error('[Bot] This can happen when a previous session disconnected mid-tool-approval');
+          this.store.conversationId = null;
+          console.warn('[Bot] Cleared stored conversation ID after timeout with no stream data');
           await adapter.sendMessage({ 
             chatId: msg.chatId, 
             text: '(Session interrupted. Try: lettabot reset-conversation)', 
@@ -779,14 +835,16 @@ export class LettaBot implements AgentSession {
       
     } catch (error) {
       console.error('[Bot] Error processing message:', error);
-      try {
-        await adapter.sendMessage({
-          chatId: msg.chatId,
-          text: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          threadId: msg.threadId,
-        });
-      } catch (sendError) {
-        console.error('[Bot] Failed to send error message to channel:', sendError);
+      if (!isInterAgentMessage) {
+        try {
+          await adapter.sendMessage({
+            chatId: msg.chatId,
+            text: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            threadId: msg.threadId,
+          });
+        } catch (sendError) {
+          console.error('[Bot] Failed to send error message to channel:', sendError);
+        }
       }
     } finally {
       session!?.close();
@@ -846,6 +904,11 @@ export class LettaBot implements AgentSession {
         return { behavior: 'allow' as const };
       },
     };
+    if (this.store.agentId) {
+      await this.ensureApprovalsDisabled(this.store.agentId).catch((err) => {
+        console.warn('[Bot] Failed to verify tool approvals before sendToAgent:', err);
+      });
+    }
     
     let session: Session;
     let usedDefaultConversation = false;
@@ -863,6 +926,9 @@ export class LettaBot implements AgentSession {
       const newAgentId = await createAgent({
         systemPrompt: SYSTEM_PROMPT,
         memory: loadMemoryBlocks(this.config.agentName),
+      });
+      await this.ensureApprovalsDisabled(newAgentId, true).catch((err) => {
+        console.warn('[Bot] Failed to disable tool approvals on new sendToAgent agent:', err);
       });
       session = createSession(newAgentId, baseOptions);
     }

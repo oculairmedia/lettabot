@@ -31,3 +31,16 @@ export interface SendFileResponse {
   error?: string;
   field?: string;
 }
+
+export interface InjectContextRequest {
+  agentName: string;
+  text: string;
+  source?: string;
+}
+
+export interface InjectContextResponse {
+  success: boolean;
+  response?: string;
+  error?: string;
+  field?: string;
+}

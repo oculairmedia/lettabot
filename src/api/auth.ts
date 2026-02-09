@@ -75,8 +75,10 @@ export function validateApiKey(headers: IncomingHttpHeaders, expectedKey: string
   }
 
   // Use constant-time comparison to prevent timing attacks
-  return crypto.timingSafeEqual(
-    Buffer.from(providedKey),
-    Buffer.from(expectedKey)
-  );
+  const provided = Buffer.from(providedKey);
+  const expected = Buffer.from(expectedKey);
+  if (provided.length !== expected.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(provided, expected);
 }

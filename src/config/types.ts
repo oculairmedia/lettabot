@@ -24,6 +24,7 @@ export interface AgentConfig {
     whatsapp?: WhatsAppConfig;
     signal?: SignalConfig;
     discord?: DiscordConfig;
+    matrix?: MatrixConfig;
   };
   /** Features for this agent */
   features?: {
@@ -77,6 +78,7 @@ export interface LettaBotConfig {
     whatsapp?: WhatsAppConfig;
     signal?: SignalConfig;
     discord?: DiscordConfig;
+    matrix?: MatrixConfig;
   };
 
   // Features
@@ -200,6 +202,22 @@ export interface DiscordConfig {
   instantGroups?: string[];       // Guild/server IDs or channel IDs that bypass batching
 }
 
+export interface MatrixConfig {
+  enabled: boolean;
+  homeserverUrl?: string;
+  accessToken?: string;
+  storagePath?: string;
+  cryptoStoragePath?: string;
+  encryptionEnabled?: boolean;
+  dmPolicy?: 'pairing' | 'allowlist' | 'open';
+  allowedUsers?: string[];
+  autoJoinRooms?: boolean;
+  messagePrefix?: string;
+  groupDebounceSec?: number;
+  groupPollIntervalMin?: number;  // @deprecated
+  instantGroups?: string[];
+}
+
 export interface GoogleConfig {
   enabled: boolean;
   account?: string;
@@ -246,6 +264,9 @@ export function normalizeAgents(config: LettaBotConfig): AgentConfig[] {
     }
     if (channels.discord?.enabled !== false && channels.discord?.token) {
       normalized.discord = channels.discord;
+    }
+    if (channels.matrix?.enabled !== false && channels.matrix?.homeserverUrl && channels.matrix?.accessToken) {
+      normalized.matrix = channels.matrix;
     }
 
     return normalized;
@@ -312,6 +333,17 @@ export function normalizeAgents(config: LettaBotConfig): AgentConfig[] {
       token: process.env.DISCORD_BOT_TOKEN,
       dmPolicy: (process.env.DISCORD_DM_POLICY as 'pairing' | 'allowlist' | 'open') || 'pairing',
       allowedUsers: parseList(process.env.DISCORD_ALLOWED_USERS),
+    };
+  }
+  if (!channels.matrix && process.env.MATRIX_HOMESERVER_URL && process.env.MATRIX_ACCESS_TOKEN) {
+    channels.matrix = {
+      enabled: true,
+      homeserverUrl: process.env.MATRIX_HOMESERVER_URL,
+      accessToken: process.env.MATRIX_ACCESS_TOKEN,
+      dmPolicy: (process.env.MATRIX_DM_POLICY as 'pairing' | 'allowlist' | 'open') || 'pairing',
+      allowedUsers: parseList(process.env.MATRIX_ALLOWED_USERS),
+      encryptionEnabled: process.env.MATRIX_ENCRYPTION_ENABLED !== 'false',
+      autoJoinRooms: process.env.MATRIX_AUTO_JOIN_ROOMS !== 'false',
     };
   }
 

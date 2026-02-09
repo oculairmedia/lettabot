@@ -194,6 +194,14 @@ export function configToEnv(config: LettaBotConfig): Record<string, string> {
   if (config.channels.discord?.instantGroups?.length) {
     env.DISCORD_INSTANT_GROUPS = config.channels.discord.instantGroups.join(',');
   }
+  if (config.channels?.matrix) {
+    if (config.channels.matrix.homeserverUrl) env.MATRIX_HOMESERVER_URL = config.channels.matrix.homeserverUrl;
+    if (config.channels.matrix.accessToken) env.MATRIX_ACCESS_TOKEN = config.channels.matrix.accessToken;
+    if (config.channels.matrix.dmPolicy) env.MATRIX_DM_POLICY = config.channels.matrix.dmPolicy;
+    if (config.channels.matrix.allowedUsers?.length) env.MATRIX_ALLOWED_USERS = config.channels.matrix.allowedUsers.join(',');
+    if (config.channels.matrix.encryptionEnabled !== undefined) env.MATRIX_ENCRYPTION_ENABLED = String(config.channels.matrix.encryptionEnabled);
+    if (config.channels.matrix.autoJoinRooms !== undefined) env.MATRIX_AUTO_JOIN_ROOMS = String(config.channels.matrix.autoJoinRooms);
+  }
   
   // Features
   if (config.features?.cron) {

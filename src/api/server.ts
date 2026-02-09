@@ -6,27 +6,40 @@
 import * as http from 'http';
 import * as fs from 'fs';
 import { validateApiKey } from './auth.js';
-import type { SendMessageRequest, SendMessageResponse, SendFileResponse } from './types.js';
+import type { SendMessageRequest, SendMessageResponse, SendFileResponse, InjectContextRequest, InjectContextResponse } from './types.js';
 import { parseMultipart } from './multipart.js';
-import type { MessageDeliverer } from '../core/interfaces.js';
+import type { AgentSession, MessageDeliverer } from '../core/interfaces.js';
 import type { ChannelId } from '../core/types.js';
 
-const VALID_CHANNELS: ChannelId[] = ['telegram', 'slack', 'discord', 'whatsapp', 'signal'];
+const VALID_CHANNELS: ChannelId[] = ['telegram', 'slack', 'discord', 'whatsapp', 'signal', 'matrix'];
 const MAX_BODY_SIZE = 10 * 1024; // 10KB
 const MAX_TEXT_LENGTH = 10000; // 10k chars
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
+/**
+ * Generic upgrade handler for WebSocket endpoints.
+ * Returns true if the request was handled (path matched).
+ */
+export interface UpgradeHandler {
+  handleUpgrade(req: http.IncomingMessage, socket: import('stream').Duplex, head: Buffer): boolean;
+}
 
 interface ServerOptions {
   port: number;
   apiKey: string;
   host?: string; // Bind address (default: 127.0.0.1 for security)
   corsOrigin?: string; // CORS origin (default: same-origin only)
+  upgradeHandlers?: UpgradeHandler[];
 }
 
 /**
  * Create and start the HTTP API server
  */
 export function createApiServer(deliverer: MessageDeliverer, options: ServerOptions): http.Server {
+  const agentResolver = deliverer as MessageDeliverer & {
+    getAgent?: (name: string) => AgentSession | undefined;
+  };
+
   const server = http.createServer(async (req, res) => {
     // Set CORS headers (configurable origin, defaults to same-origin for security)
     const corsOrigin = options.corsOrigin || req.headers.origin || 'null';
@@ -121,12 +134,86 @@ export function createApiServer(deliverer: MessageDeliverer, options: ServerOpti
       return;
     }
 
+    // Route: POST /api/v1/inject - inject text to a specific agent
+    if (req.url === '/api/v1/inject' && req.method === 'POST') {
+      try {
+        if (!validateApiKey(req.headers, options.apiKey)) {
+          sendError(res, 401, 'Unauthorized');
+          return;
+        }
+
+        const body = await readBody(req, MAX_BODY_SIZE);
+        let request: InjectContextRequest;
+        try {
+          request = JSON.parse(body);
+        } catch {
+          sendError(res, 400, 'Invalid JSON body');
+          return;
+        }
+
+        if (!request.agentName) {
+          sendError(res, 400, 'Missing required field: agentName', 'agentName');
+          return;
+        }
+        if (!request.text) {
+          sendError(res, 400, 'Missing required field: text', 'text');
+          return;
+        }
+        if (typeof request.agentName !== 'string') {
+          sendError(res, 400, 'Field "agentName" must be a string', 'agentName');
+          return;
+        }
+        if (typeof request.text !== 'string' || request.text.length > MAX_TEXT_LENGTH) {
+          sendError(res, 400, `Text must be a string under ${MAX_TEXT_LENGTH} chars`, 'text');
+          return;
+        }
+
+        if (typeof agentResolver.getAgent !== 'function') {
+          sendError(res, 500, 'Inject endpoint requires gateway agent lookup support');
+          return;
+        }
+
+        const agent = agentResolver.getAgent(request.agentName);
+        if (!agent) {
+          sendError(res, 404, `Agent not found: ${request.agentName}`, 'agentName');
+          return;
+        }
+
+        const source = request.source || 'api';
+        const fullText = `[${source}] ${request.text}`;
+        console.log(`[API] Injecting context to ${request.agentName} from ${source} (${request.text.length} chars)`);
+
+        const response = await agent.sendToAgent(fullText);
+
+        const result: InjectContextResponse = {
+          success: true,
+          response: response || undefined,
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error: any) {
+        console.error('[API] Error injecting context:', error);
+        sendError(res, 500, error.message || 'Internal server error');
+      }
+      return;
+    }
+
     // Route: 404 Not Found
     sendError(res, 404, 'Not found');
   });
 
   // Bind to localhost by default for security (prevents network exposure on bare metal)
   // Use API_HOST=0.0.0.0 in Docker to expose on all interfaces
+  if (options.upgradeHandlers?.length) {
+    server.on('upgrade', (req, socket, head) => {
+      for (const handler of options.upgradeHandlers!) {
+        if (handler.handleUpgrade(req, socket, head)) return;
+      }
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+    });
+  }
+
   const host = options.host || '127.0.0.1';
   server.listen(options.port, host, () => {
     console.log(`[API] Server listening on ${host}:${options.port}`);
