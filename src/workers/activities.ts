@@ -103,6 +103,7 @@ export async function notifyCompletionActivity(
       body: JSON.stringify({
         text: summary,
         source: 'worker-completion',
+        async: true,
       }),
     });
 

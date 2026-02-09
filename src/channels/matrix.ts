@@ -47,6 +47,7 @@ export class MatrixAdapter implements ChannelAdapter {
 	private config: MatrixConfig;
 	private running = false;
 	private userId: string | null = null;
+	private bridgeManagedRooms = new Map<string, boolean>();
 
 	onMessage?: (msg: InboundMessage) => Promise<void>;
 	onCommand?: (command: string) => Promise<string | null>;
@@ -164,17 +165,32 @@ export class MatrixAdapter implements ChannelAdapter {
 			const sender = event.sender as string;
 			if (sender === this.userId) return;
 
-			const text = (content.body as string) || "";
-			const messageId = event.event_id as string;
-
-			// Detect Letta agent senders - route to background notification handler
-			// Agent MXIDs follow pattern: @agent_{uuid}:matrix.oculair.ca
-			const isAgentSender = /^@agent_[a-f0-9_-]+:matrix\.oculair\.ca$/i.test(sender);
-			if (isAgentSender && this.onAgentMessage) {
-				console.log(`[Matrix] Agent message from ${sender} - routing to background handler`);
-				await this.onAgentMessage(sender, text, roomId);
+			// Skip bridge-managed identities (already routed to Letta via external bridge)
+			const isBridgeIdentity = /^@(oc_|agent_)[a-z0-9_-]+:/i.test(sender);
+			if (isBridgeIdentity) {
+				console.log(`[Matrix] Skipping bridge identity ${sender}`);
 				return;
 			}
+
+			// Skip messages originated by the bridge (re-posted with metadata wrapper)
+			if (content["m.bridge_originated"] === true) {
+				console.log(`[Matrix] Skipping bridge-originated message from ${sender}`);
+				return;
+			}
+
+			const relatesTo = content["m.relates_to"] as Record<string, unknown> | undefined;
+			if (relatesTo?.rel_type === "m.replace") {
+				return;
+			}
+
+			// Skip rooms managed by the external bridge (has @agent_* member)
+			if (await this.isBridgeManagedRoom(roomId)) {
+				console.log(`[Matrix] Skipping bridge-managed room ${roomId}`);
+				return;
+			}
+
+			const text = (content.body as string) || "";
+			const messageId = event.event_id as string;
 
 			// Check access control
 			const access = await this.checkAccess(sender);
@@ -280,6 +296,23 @@ export class MatrixAdapter implements ChannelAdapter {
 			);
 		} catch {
 			// Ignore errors sending failure notice
+		}
+	}
+
+	private async isBridgeManagedRoom(roomId: string): Promise<boolean> {
+		const cached = this.bridgeManagedRooms.get(roomId);
+		if (cached !== undefined) return cached;
+
+		try {
+			if (!this.client) return false;
+			const members = await this.client.getJoinedRoomMembers(roomId);
+			const hasAgentIdentity = members.some((m: string) =>
+				/^@agent_[a-z0-9_-]+:/i.test(m),
+			);
+			this.bridgeManagedRooms.set(roomId, hasAgentIdentity);
+			return hasAgentIdentity;
+		} catch {
+			return false;
 		}
 	}
 

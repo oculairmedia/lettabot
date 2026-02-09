@@ -155,14 +155,21 @@ export function createApiServer(bot: LettaBot, options: ServerOptions): http.Ser
 
         console.log(`[API] Injecting context from ${source} (${request.text.length} chars)`);
         
-        const response = await bot.sendToAgent(fullText);
-        
-        const result: InjectContextResponse = {
-          success: true,
-          response: response || undefined,
-        };
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(result));
+        if (request.async) {
+          bot.sendToAgent(fullText).catch(err =>
+            console.error(`[API] Async inject failed:`, err)
+          );
+          res.writeHead(202, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, queued: true }));
+        } else {
+          const response = await bot.sendToAgent(fullText);
+          const result: InjectContextResponse = {
+            success: true,
+            response: response || undefined,
+          };
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        }
       } catch (error: any) {
         console.error('[API] Error injecting context:', error);
         sendError(res, 500, error.message || 'Internal server error');

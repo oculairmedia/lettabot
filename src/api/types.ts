@@ -36,6 +36,7 @@ export interface InjectContextRequest {
   text: string;
   source?: string;
   metadata?: Record<string, unknown>;
+  async?: boolean;
 }
 
 export interface InjectContextResponse {
