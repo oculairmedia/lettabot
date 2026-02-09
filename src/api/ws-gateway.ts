@@ -233,7 +233,16 @@ export class WsGateway {
     }
 
     try {
+      // Deduplicate tool_call chunks: the SDK streams tool_call events token-by-token
+      // as arguments are generated, so a single tool call produces many wire events
+      // with the same toolCallId. Only forward the first chunk per unique toolCallId.
+      // (mirrors bot.ts lines 565-568)
+      const seenToolCallIds = new Set<string>();
       for await (const event of this.sessions.sendAndStream(connId, msg.content)) {
+        if (event.type === 'tool_call' && event.toolCallId) {
+          if (seenToolCallIds.has(event.toolCallId)) continue;
+          seenToolCallIds.add(event.toolCallId);
+        }
         this.forwardStreamEvent(ws, connId, event, msg.request_id);
       }
     } catch (err) {
