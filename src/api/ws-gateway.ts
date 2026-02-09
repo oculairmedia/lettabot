@@ -248,8 +248,11 @@ export class WsGateway {
   // --- outbound helpers ---
 
   private forwardStreamEvent(ws: WebSocket, connId: string, msg: SDKMessage, requestId?: string): void {
+    // Match bot.ts filtering: only forward events that should be visible to users.
+    // Reasoning and tool internals stay server-side — same as Telegram/Matrix direct channels.
     switch (msg.type) {
       case 'assistant':
+        if (this.isInternalMessage(msg.content)) break;
         this.send(ws, { type: 'stream', event: 'assistant', content: msg.content, uuid: msg.uuid, request_id: requestId });
         break;
       case 'tool_call':
@@ -259,7 +262,7 @@ export class WsGateway {
         this.send(ws, { type: 'stream', event: 'tool_result', content: msg.content, tool_call_id: msg.toolCallId, is_error: msg.isError, uuid: msg.uuid, request_id: requestId });
         break;
       case 'reasoning':
-        this.send(ws, { type: 'stream', event: 'reasoning', content: msg.content, uuid: msg.uuid, request_id: requestId });
+        // Suppressed — not forwarded to clients (matches bot.ts behavior)
         break;
       case 'result': {
         const info = this.sessions.getInfo(connId);
@@ -273,6 +276,18 @@ export class WsGateway {
         });
         break;
       }
+    }
+  }
+
+  private isInternalMessage(content: string | undefined): boolean {
+    if (!content) return false;
+    const trimmed = content.trim();
+    if (!trimmed.startsWith('{') || !trimmed.includes('"type"')) return false;
+    try {
+      const parsed = JSON.parse(trimmed);
+      return parsed?.type === 'system_alert' || parsed?.type === 'internal_monologue';
+    } catch {
+      return false;
     }
   }
 
