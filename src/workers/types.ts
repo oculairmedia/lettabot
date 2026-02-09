@@ -50,6 +50,8 @@ export interface WorkerTask {
   resolvedBlockedTools: string[];
   /** Resolved timeout in ms */
   resolvedTimeout: number;
+  /** Callback config for completion notification via /api/v1/inject */
+  notifyConfig: WorkerNotifyConfig;
 }
 
 /** Result returned by WorkerSpawnWorkflow */
@@ -66,4 +68,20 @@ export interface WorkerResult {
   duration: number;
   /** Error message if failed */
   error?: string;
+}
+
+/** Immediate response from async spawn (returned before workflow completes) */
+export interface WorkerSpawnResponse {
+  /** Temporal workflow ID for tracking */
+  workflowId: string;
+  /** Always 'started' for async spawn */
+  status: 'started';
+}
+
+/** Notification config passed into the workflow for completion callback */
+export interface WorkerNotifyConfig {
+  /** LettaBot API base URL (e.g. http://192.168.50.90:8407) */
+  apiUrl: string;
+  /** LettaBot API key for /api/v1/inject authentication */
+  apiKey: string;
 }

@@ -78,3 +78,38 @@ export async function deleteWorkerAgentActivity(workerAgentId: string): Promise<
     throw classifyError(error);
   }
 }
+
+export async function notifyCompletionActivity(
+  apiUrl: string,
+  apiKey: string,
+  workflowId: string,
+  taskPrompt: string,
+  success: boolean,
+  response: string | null,
+  passagesWritten: number,
+  error?: string,
+): Promise<void> {
+  const summary = success
+    ? `Worker ${workflowId} completed task: "${taskPrompt.slice(0, 100)}". Result written to archival memory (${passagesWritten} passage${passagesWritten === 1 ? '' : 's'}). Response preview: ${(response ?? '').slice(0, 300)}`
+    : `Worker ${workflowId} failed task: "${taskPrompt.slice(0, 100)}". Error: ${error ?? 'unknown'}`;
+
+  try {
+    const resp = await fetch(`${apiUrl}/api/v1/inject`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Api-Key': apiKey,
+      },
+      body: JSON.stringify({
+        text: summary,
+        source: 'worker-completion',
+      }),
+    });
+
+    if (!resp.ok) {
+      throw new Error(`Inject returned ${resp.status}: ${await resp.text()}`);
+    }
+  } catch (err) {
+    throw classifyError(err);
+  }
+}

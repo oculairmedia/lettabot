@@ -10,7 +10,7 @@ import type { SendMessageRequest, SendMessageResponse, SendFileResponse, InjectC
 import { parseMultipart } from './multipart.js';
 import type { LettaBot } from '../core/bot.js';
 import type { ChannelId } from '../core/types.js';
-import { handleWorkerSpawnRequest } from '../workers/index.js';
+import { handleWorkerSpawnRequest, handleWorkerStatusRequest } from '../workers/index.js';
 
 const VALID_CHANNELS: ChannelId[] = ['telegram', 'slack', 'discord', 'whatsapp', 'signal'];
 const MAX_BODY_SIZE = 10 * 1024; // 10KB
@@ -174,7 +174,7 @@ export function createApiServer(bot: LettaBot, options: ServerOptions): http.Ser
     if (req.url === '/api/v1/worker/spawn' && req.method === 'POST') {
       try {
         const body = await readBody(req, MAX_BODY_SIZE);
-        let request: { task_description: string; agent_id: string; model?: string; tags?: string[] };
+        let request: { task_description: string; agent_id: string; model?: string; tags?: string[]; timeout_seconds?: number };
         try {
           request = JSON.parse(body);
         } catch {
@@ -187,14 +187,39 @@ export function createApiServer(bot: LettaBot, options: ServerOptions): http.Ser
           return;
         }
 
-        console.log(`[API] Worker spawn request: agent=${request.agent_id}, task="${request.task_description.slice(0, 80)}..."`);
+        console.log(`[API] Worker spawn request: agent=${request.agent_id}, timeout=${request.timeout_seconds ?? 'default'}s, task="${request.task_description.slice(0, 80)}..."`);
 
         const result = await handleWorkerSpawnRequest(request);
 
-        res.writeHead(result.success ? 200 : 500, { 'Content-Type': 'application/json' });
+        const statusCode = result.success ? 202 : 500;
+        res.writeHead(statusCode, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (error: any) {
         console.error('[API] Error handling worker spawn:', error);
+        sendError(res, 500, error.message || 'Internal server error');
+      }
+      return;
+    }
+
+    // Route: GET /api/v1/worker/status/:workflowId - check worker workflow status (no auth, called by Letta sandbox)
+    if (req.url?.startsWith('/api/v1/worker/status/') && req.method === 'GET') {
+      try {
+        const workflowId = decodeURIComponent(req.url.slice('/api/v1/worker/status/'.length));
+        if (!workflowId) {
+          sendError(res, 400, 'Missing workflow ID');
+          return;
+        }
+
+        const status = await handleWorkerStatusRequest(workflowId);
+        if (!status) {
+          sendError(res, 404, `Workflow ${workflowId} not found`);
+          return;
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(status));
+      } catch (error: any) {
+        console.error('[API] Error checking worker status:', error);
         sendError(res, 500, error.message || 'Internal server error');
       }
       return;

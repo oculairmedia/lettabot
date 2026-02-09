@@ -1,5 +1,5 @@
 import { Client, Connection } from '@temporalio/client';
-import type { WorkerConfig, WorkerResult, WorkerTask } from './types.js';
+import type { WorkerConfig, WorkerTask, WorkerSpawnResponse, WorkerNotifyConfig } from './types.js';
 import { getWorkersConfig } from './config.js';
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS || '192.168.50.90:7233';
@@ -18,7 +18,8 @@ async function getClient(): Promise<Client> {
 export async function startWorkerSpawn(
   mainAgentId: string,
   config: WorkerConfig,
-): Promise<WorkerResult | null> {
+  notifyConfig: WorkerNotifyConfig,
+): Promise<WorkerSpawnResponse | null> {
   try {
     const c = await getClient();
     const workersConfig = getWorkersConfig();
@@ -30,32 +31,65 @@ export async function startWorkerSpawn(
       resolvedModel: config.model ?? workersConfig.defaultModel,
       resolvedBlockedTools: config.blockedTools ?? workersConfig.blockedTools,
       resolvedTimeout: config.timeout ?? workersConfig.taskTimeout,
+      notifyConfig,
     };
 
     const workflowId = `worker-spawn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    const handle = await c.workflow.start<(task: WorkerTask) => Promise<WorkerResult>>(
-      'WorkerSpawnWorkflow',
-      {
-        taskQueue: TASK_QUEUE,
-        workflowId,
-        workflowExecutionTimeout: `${task.resolvedTimeout + 60_000}ms`,
-        args: [task],
-      },
-    );
+    await c.workflow.start('WorkerSpawnWorkflow', {
+      taskQueue: TASK_QUEUE,
+      workflowId,
+      workflowExecutionTimeout: `${task.resolvedTimeout + 60_000}ms`,
+      args: [task],
+    });
 
-    console.log(`[Worker] Started workflow ${workflowId}`);
-    const result = await handle.result();
+    console.log(`[Worker] Started async workflow ${workflowId}`);
 
-    if (result.success) {
-      console.log(`[Worker] Workflow ${workflowId} completed: ${result.passagesWritten} passages written`);
-    } else {
-      console.warn(`[Worker] Workflow ${workflowId} failed: ${result.error}`);
-    }
-
-    return result;
+    return { workflowId, status: 'started' };
   } catch (error) {
     console.error('[Worker] Failed to start worker spawn:', error);
+    return null;
+  }
+}
+
+export interface WorkerStatusResult {
+  workflowId: string;
+  status: string;
+  phase?: string;
+  workerAgentId?: string;
+  error?: string;
+}
+
+export async function getWorkerStatus(workflowId: string): Promise<WorkerStatusResult | null> {
+  try {
+    const c = await getClient();
+    const handle = c.workflow.getHandle(workflowId);
+    const description = await handle.describe();
+
+    const workflowStatus = description.status.name;
+
+    let phase: string | undefined;
+    let workerAgentId: string | undefined;
+    let error: string | undefined;
+
+    if (workflowStatus === 'RUNNING') {
+      try {
+        const queryResult = await handle.query<{ phase: string; workerAgentId?: string; error?: string }>('workerStatus');
+        phase = queryResult.phase;
+        workerAgentId = queryResult.workerAgentId;
+        error = queryResult.error;
+      } catch {
+        phase = 'unknown';
+      }
+    }
+
+    return { workflowId, status: workflowStatus, phase, workerAgentId, error };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('not found') || msg.includes('NOT_FOUND')) {
+      return null;
+    }
+    console.error(`[Worker] Failed to get status for ${workflowId}:`, err);
     return null;
   }
 }

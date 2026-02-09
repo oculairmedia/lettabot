@@ -2,22 +2,11 @@ import {
   proxyActivities,
   defineQuery,
   setHandler,
+  workflowInfo,
 } from '@temporalio/workflow';
 
 import type * as workerActivities from './activities';
 import type { WorkerTask, WorkerResult } from './types';
-
-const { createWorkerAgentActivity, executeWorkerTaskActivity, writeResultsToArchivalActivity } =
-  proxyActivities<typeof workerActivities>({
-    startToCloseTimeout: '120 seconds',
-    retry: {
-      initialInterval: '2 seconds',
-      backoffCoefficient: 2,
-      maximumInterval: '60 seconds',
-      maximumAttempts: 3,
-      nonRetryableErrorTypes: ['WorkerClientError'],
-    },
-  });
 
 const { deleteWorkerAgentActivity } = proxyActivities<typeof workerActivities>({
   startToCloseTimeout: '30 seconds',
@@ -39,6 +28,29 @@ export const workerStatusQuery = defineQuery<{
 }>('workerStatus');
 
 export async function WorkerSpawnWorkflow(task: WorkerTask): Promise<WorkerResult> {
+  const { createWorkerAgentActivity, executeWorkerTaskActivity, writeResultsToArchivalActivity } =
+    proxyActivities<typeof workerActivities>({
+      startToCloseTimeout: task.resolvedTimeout,
+      retry: {
+        initialInterval: '2 seconds',
+        backoffCoefficient: 2,
+        maximumInterval: '60 seconds',
+        maximumAttempts: 3,
+        nonRetryableErrorTypes: ['WorkerClientError'],
+      },
+    });
+
+  const { notifyCompletionActivity } = proxyActivities<typeof workerActivities>({
+    startToCloseTimeout: task.resolvedTimeout,
+    retry: {
+      initialInterval: '5 seconds',
+      backoffCoefficient: 2,
+      maximumInterval: '60 seconds',
+      maximumAttempts: 2,
+      nonRetryableErrorTypes: ['WorkerClientError'],
+    },
+  });
+
   const startTime = Date.now();
   let phase = 'initializing';
   let workerAgentId = '';
@@ -50,6 +62,8 @@ export async function WorkerSpawnWorkflow(task: WorkerTask): Promise<WorkerResul
     error: lastError,
   }));
 
+  let result: WorkerResult;
+
   try {
     phase = 'creating-agent';
     workerAgentId = await createWorkerAgentActivity(task);
@@ -58,16 +72,15 @@ export async function WorkerSpawnWorkflow(task: WorkerTask): Promise<WorkerResul
     const response = await executeWorkerTaskActivity(workerAgentId, task.config.taskPrompt);
 
     phase = 'writing-results';
+    const wfId = workflowInfo().workflowId;
     const passagesWritten = await writeResultsToArchivalActivity(
       task.mainAgentId,
       response,
-      // workflowId not available inside workflow — use agent ID as dedup key
-      workerAgentId,
+      wfId,
       task.config.tags ?? [],
     );
 
-    phase = 'completed';
-    return {
+    result = {
       success: true,
       response,
       passagesWritten,
@@ -76,9 +89,7 @@ export async function WorkerSpawnWorkflow(task: WorkerTask): Promise<WorkerResul
     };
   } catch (error) {
     lastError = error instanceof Error ? error.message : String(error);
-    phase = 'failed';
-
-    return {
+    result = {
       success: false,
       response: null,
       passagesWritten: 0,
@@ -86,14 +97,33 @@ export async function WorkerSpawnWorkflow(task: WorkerTask): Promise<WorkerResul
       duration: Date.now() - startTime,
       error: lastError,
     };
-  } finally {
-    if (workerAgentId) {
-      phase = 'cleaning-up';
-      try {
-        await deleteWorkerAgentActivity(workerAgentId);
-      } catch {
-        // Cleanup failure is logged by the activity — don't mask the primary error
-      }
+  }
+
+  phase = result.success ? 'notifying' : 'notifying-failure';
+  try {
+    await notifyCompletionActivity(
+      task.notifyConfig.apiUrl,
+      task.notifyConfig.apiKey,
+      workflowInfo().workflowId,
+      task.config.taskPrompt,
+      result.success,
+      result.response,
+      result.passagesWritten,
+      result.error,
+    );
+  } catch {
+    // Notification failure shouldn't fail the workflow — results are already in archival
+  }
+
+  if (workerAgentId) {
+    phase = 'cleaning-up';
+    try {
+      await deleteWorkerAgentActivity(workerAgentId);
+    } catch {
+      // Cleanup failure is logged by the activity
     }
   }
+
+  phase = result.success ? 'completed' : 'failed';
+  return result;
 }
