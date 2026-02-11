@@ -394,7 +394,7 @@ function createChannelsForAgent(
     }));
   }
 
-  if (agentConfig.channels.matrix?.homeserverUrl && agentConfig.channels.matrix?.accessToken) {
+  if (agentConfig.channels.matrix?.enabled !== false && agentConfig.channels.matrix?.homeserverUrl && agentConfig.channels.matrix?.accessToken) {
     adapters.push(new MatrixAdapter({
       homeserverUrl: agentConfig.channels.matrix.homeserverUrl,
       accessToken: agentConfig.channels.matrix.accessToken,
