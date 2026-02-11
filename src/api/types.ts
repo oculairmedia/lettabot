@@ -46,3 +46,16 @@ export interface ChatResponse {
   agentName?: string;
   error?: string;
 }
+
+export interface InjectContextRequest {
+  agentName: string;
+  text: string;
+  source?: string;
+}
+
+export interface InjectContextResponse {
+  success: boolean;
+  response?: string;
+  error?: string;
+  field?: string;
+}

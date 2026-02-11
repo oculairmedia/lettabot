@@ -11,16 +11,21 @@ import { parseMultipart } from './multipart.js';
 import type { AgentRouter } from '../core/interfaces.js';
 import type { ChannelId } from '../core/types.js';
 
-const VALID_CHANNELS: ChannelId[] = ['telegram', 'slack', 'discord', 'whatsapp', 'signal'];
+const VALID_CHANNELS: ChannelId[] = ['telegram', 'slack', 'discord', 'whatsapp', 'signal', 'matrix'];
 const MAX_BODY_SIZE = 10 * 1024; // 10KB
 const MAX_TEXT_LENGTH = 10000; // 10k chars
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
+export interface UpgradeHandler {
+  handleUpgrade(req: http.IncomingMessage, socket: import('stream').Duplex, head: Buffer): boolean;
+}
 
 interface ServerOptions {
   port: number;
   apiKey: string;
   host?: string; // Bind address (default: 127.0.0.1 for security)
   corsOrigin?: string; // CORS origin (default: same-origin only)
+  upgradeHandlers?: UpgradeHandler[];
 }
 
 /**
@@ -216,9 +221,77 @@ export function createApiServer(deliverer: AgentRouter, options: ServerOptions):
       return;
     }
 
+    if (req.url === '/api/v1/inject' && req.method === 'POST') {
+      try {
+        if (!validateApiKey(req.headers, options.apiKey)) {
+          sendError(res, 401, 'Unauthorized');
+          return;
+        }
+
+        const body = await readBody(req, MAX_BODY_SIZE);
+        let request: import('./types.js').InjectContextRequest;
+        try {
+          request = JSON.parse(body);
+        } catch {
+          sendError(res, 400, 'Invalid JSON body');
+          return;
+        }
+
+        if (!request.agentName || typeof request.agentName !== 'string') {
+          sendError(res, 400, 'Missing required field: agentName', 'agentName');
+          return;
+        }
+        if (!request.text || typeof request.text !== 'string' || request.text.length > MAX_TEXT_LENGTH) {
+          sendError(res, 400, `Text must be a string under ${MAX_TEXT_LENGTH} chars`, 'text');
+          return;
+        }
+
+        const agentResolver = deliverer as typeof deliverer & {
+          getAgent?: (name: string) => import('../core/interfaces.js').AgentSession | undefined;
+        };
+        if (typeof agentResolver.getAgent !== 'function') {
+          sendError(res, 500, 'Inject endpoint requires gateway agent lookup support');
+          return;
+        }
+
+        const agent = agentResolver.getAgent(request.agentName);
+        if (!agent) {
+          sendError(res, 404, `Agent not found: ${request.agentName}`, 'agentName');
+          return;
+        }
+
+        const source = request.source || 'api';
+        const fullText = `[${source}] ${request.text}`;
+        console.log(`[API] Injecting context to ${request.agentName} from ${source} (${request.text.length} chars)`);
+
+        const response = await agent.sendToAgent(fullText);
+
+        const result: import('./types.js').InjectContextResponse = {
+          success: true,
+          response: response || undefined,
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error: any) {
+        console.error('[API] Error injecting context:', error);
+        sendError(res, 500, error.message || 'Internal server error');
+      }
+      return;
+    }
+
     // Route: 404 Not Found
     sendError(res, 404, 'Not found');
   });
+
+  if (options.upgradeHandlers?.length) {
+    server.on('upgrade', (req, socket, head) => {
+      for (const handler of options.upgradeHandlers!) {
+        if (handler.handleUpgrade(req, socket, head)) return;
+      }
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+    });
+  }
 
   // Bind to localhost by default for security (prevents network exposure on bare metal)
   // Use API_HOST=0.0.0.0 in Docker to expose on all interfaces

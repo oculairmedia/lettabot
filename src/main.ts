@@ -160,9 +160,10 @@ import { SlackAdapter } from './channels/slack.js';
 import { WhatsAppAdapter } from './channels/whatsapp/index.js';
 import { SignalAdapter } from './channels/signal.js';
 import { DiscordAdapter } from './channels/discord.js';
+import { MatrixAdapter } from './channels/matrix.js';
 import { GroupBatcher } from './core/group-batcher.js';
 import { printStartupBanner } from './core/banner.js';
-import { collectGroupBatchingConfig } from './core/group-batching-config.js';
+import { collectGroupBatchingConfig, resolveDebounceMs } from './core/group-batching-config.js';
 import { CronService } from './cron/service.js';
 import { HeartbeatService } from './cron/heartbeat.js';
 import { PollingService, parseGmailAccounts } from './polling/service.js';
@@ -393,6 +394,22 @@ function createChannelsForAgent(
     }));
   }
 
+  if (agentConfig.channels.matrix?.homeserverUrl && agentConfig.channels.matrix?.accessToken) {
+    adapters.push(new MatrixAdapter({
+      homeserverUrl: agentConfig.channels.matrix.homeserverUrl,
+      accessToken: agentConfig.channels.matrix.accessToken,
+      storagePath: agentConfig.channels.matrix.storagePath,
+      cryptoStoragePath: agentConfig.channels.matrix.cryptoStoragePath,
+      encryptionEnabled: agentConfig.channels.matrix.encryptionEnabled,
+      dmPolicy: agentConfig.channels.matrix.dmPolicy || 'pairing',
+      allowedUsers: agentConfig.channels.matrix.allowedUsers && agentConfig.channels.matrix.allowedUsers.length > 0
+        ? agentConfig.channels.matrix.allowedUsers
+        : undefined,
+      autoJoinRooms: agentConfig.channels.matrix.autoJoinRooms,
+      messagePrefix: agentConfig.channels.matrix.messagePrefix,
+    }));
+  }
+
   return adapters;
 }
 
@@ -404,6 +421,13 @@ function createGroupBatcher(
   bot: import('./core/interfaces.js').AgentSession,
 ): { batcher: GroupBatcher | null; intervals: Map<string, number>; instantIds: Set<string>; listeningIds: Set<string> } {
   const { intervals, instantIds, listeningIds } = collectGroupBatchingConfig(agentConfig.channels);
+
+  if (agentConfig.channels.matrix) {
+    intervals.set('matrix', resolveDebounceMs(agentConfig.channels.matrix));
+    for (const id of agentConfig.channels.matrix.instantGroups || []) {
+      instantIds.add(`matrix:${id}`);
+    }
+  }
 
   if (instantIds.size > 0) {
     console.log(`[Groups] Instant groups: ${[...instantIds].join(', ')}`);
@@ -643,6 +667,13 @@ async function main() {
   const apiKey = loadOrGenerateApiKey();
   console.log(`[API] Key: ${apiKey.slice(0, 8)}... (set LETTABOT_API_KEY to customize)`);
 
+  let wsGateway: import('./api/ws-gateway.js').WsGateway | null = null;
+  const gatewayEnabled = process.env.GATEWAY_ENABLED === 'true';
+  if (gatewayEnabled) {
+    const { WsGateway } = await import('./api/ws-gateway.js');
+    wsGateway = new WsGateway({ apiKey });
+  }
+
   // Start API server - uses gateway for delivery
   const apiPort = parseInt(process.env.PORT || '8080', 10);
   const apiHost = process.env.API_HOST; // undefined = 127.0.0.1 (secure default)
@@ -652,6 +683,7 @@ async function main() {
     apiKey: apiKey,
     host: apiHost,
     corsOrigin: apiCorsOrigin,
+    upgradeHandlers: wsGateway ? [wsGateway] : undefined,
   });
   
   // Startup banner
@@ -671,6 +703,9 @@ async function main() {
     };
   });
   printStartupBanner(bannerAgents);
+  if (gatewayEnabled) {
+    console.log(`[Gateway] WebSocket endpoint: ws://${apiHost || '127.0.0.1'}:${apiPort}/api/v1/agent-gateway`);
+  }
   
   // Shutdown
   const shutdown = async () => {
@@ -679,6 +714,7 @@ async function main() {
     services.heartbeatServices.forEach(h => h.stop());
     services.cronServices.forEach(c => c.stop());
     services.pollingServices.forEach(p => p.stop());
+    if (wsGateway) await wsGateway.shutdown();
     await gateway.stop();
     process.exit(0);
   };

@@ -75,6 +75,7 @@
     "grammy": "^1.39.3",
     "gray-matter": "^4.0.3",
     "keyv": "^5.6.0",
+    "matrix-bot-sdk": "^0.7.1",
     "node-schedule": "^2.1.1",
     "open": "^11.0.0",
     "openai": "^6.17.0",
