@@ -230,6 +230,10 @@ async function sendDiscord(chatId: string, text: string): Promise<void> {
   console.log(`✓ Sent to discord:${chatId} (id: ${result.id || 'unknown'})`);
 }
 
+async function sendMatrix(chatId: string, text: string): Promise<void> {
+  return sendViaApi('matrix', chatId, { text });
+}
+
 async function sendToChannel(channel: string, chatId: string, text: string): Promise<void> {
   switch (channel.toLowerCase()) {
     case 'telegram':
@@ -242,8 +246,10 @@ async function sendToChannel(channel: string, chatId: string, text: string): Pro
       return sendWhatsApp(chatId, text);
     case 'discord':
       return sendDiscord(chatId, text);
+    case 'matrix':
+      return sendMatrix(chatId, text);
     default:
-      throw new Error(`Unknown channel: ${channel}. Supported: telegram, slack, signal, whatsapp, discord`);
+      throw new Error(`Unknown channel: ${channel}. Supported: telegram, slack, signal, whatsapp, discord, matrix`);
   }
 }
 
@@ -295,7 +301,7 @@ async function sendCommand(args: string[]): Promise<void> {
 
   if (!channel) {
     console.error('Error: --channel is required (no default available)');
-    console.error('Specify: --channel telegram|slack|signal|discord|whatsapp');
+    console.error('Specify: --channel telegram|slack|signal|discord|whatsapp|matrix');
     process.exit(1);
   }
 
@@ -306,12 +312,13 @@ async function sendCommand(args: string[]): Promise<void> {
   }
 
   try {
-    // Use API for WhatsApp (unified multipart endpoint)
-    if (channel === 'whatsapp') {
+    // Channels that require the running bot process use the API server
+    const apiChannels = ['whatsapp', 'matrix'];
+    if (apiChannels.includes(channel)) {
       await sendViaApi(channel, chatId, { text, filePath, kind });
     } else if (filePath) {
       // Other channels with files - not yet implemented via API
-      throw new Error(`File sending for ${channel} requires API (currently only WhatsApp supported via API)`);
+      throw new Error(`File sending for ${channel} requires API (currently only whatsapp/matrix supported via API)`);
     } else {
       // Other channels with text only - direct API calls
       await sendToChannel(channel, chatId, text);
@@ -333,7 +340,7 @@ Send options:
   --text, -t <text>       Message text (or caption when used with --file)
   --file, -f <path>       File path (optional, for file messages)
   --image                 Treat file as image (vs document)
-  --channel, -c <name>    Channel: telegram, slack, whatsapp, discord (default: last used)
+  --channel, -c <name>    Channel: telegram, slack, whatsapp, discord, matrix (default: last used)
   --chat, --to <id>       Chat/conversation ID (default: last messaged)
 
 Examples:
@@ -357,11 +364,11 @@ Environment variables:
   SLACK_BOT_TOKEN         Required for Slack
   DISCORD_BOT_TOKEN       Required for Discord
   SIGNAL_PHONE_NUMBER     Required for Signal (text only, no files)
-  LETTABOT_API_KEY        Required for WhatsApp (text and files)
+  LETTABOT_API_KEY        Required for WhatsApp and Matrix (text and files)
   LETTABOT_API_URL        API server URL (default: http://localhost:8080)
   SIGNAL_CLI_REST_API_URL Signal daemon URL (default: http://127.0.0.1:8090)
 
-Note: WhatsApp uses the API server. Other channels use direct platform APIs.
+Note: WhatsApp and Matrix use the API server. Other channels use direct platform APIs.
 `);
 }
 
