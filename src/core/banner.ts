@@ -5,6 +5,7 @@
 interface BannerAgent {
   name: string;
   agentId?: string | null;
+  conversationId?: string | null;
   channels: string[];
   features?: {
     cron?: boolean;
@@ -82,9 +83,15 @@ export function printStartupBanner(agents: BannerAgent[]): void {
   // Status lines
   console.log('');
   for (const agent of agents) {
-    const id = agent.agentId || '(pending)';
     const ch = agent.channels.length > 0 ? agent.channels.join(', ') : 'none';
-    console.log(`  Agent:    ${agent.name} ${id} [${ch}]`);
+    if (agent.agentId) {
+      const qs = agent.conversationId ? `?conversation=${agent.conversationId}` : '';
+      const url = `https://app.letta.com/agents/${agent.agentId}${qs}`;
+      console.log(`  Agent:    ${agent.name} [${ch}]`);
+      console.log(`  URL:      ${url}`);
+    } else {
+      console.log(`  Agent:    ${agent.name} (pending) [${ch}]`);
+    }
   }
 
   const features: string[] = [];

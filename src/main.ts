@@ -452,18 +452,34 @@ function parseCsvList(raw: string): string[] {
     .filter((item) => item.length > 0);
 }
 
+function parseNonNegativeNumber(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  return parsed;
+}
+
+function ensureRequiredTools(tools: string[]): string[] {
+  const out = [...tools];
+  if (!out.includes('manage_todo')) {
+    out.push('manage_todo');
+  }
+  return out;
+}
+
 // Global config (shared across all agents)
 const globalConfig = {
   workingDir: getWorkingDir(),
-  allowedTools: parseCsvList(
+  allowedTools: ensureRequiredTools(parseCsvList(
     process.env.ALLOWED_TOOLS || 'Bash,Read,Edit,Write,Glob,Grep,Task,web_search,conversation_search',
-  ),
+  )),
   disallowedTools: parseCsvList(
     process.env.DISALLOWED_TOOLS || 'EnterPlanMode,ExitPlanMode',
   ),
   attachmentsMaxBytes: resolveAttachmentsMaxBytes(),
   attachmentsMaxAgeDays: resolveAttachmentsMaxAgeDays(),
   cronEnabled: process.env.CRON_ENABLED === 'true',  // Legacy env var fallback
+  heartbeatSkipRecentUserMin: parseNonNegativeNumber(process.env.HEARTBEAT_SKIP_RECENT_USER_MIN),
 };
 
 // Validate LETTA_API_KEY is set for API mode (docker mode doesn't require it)
@@ -593,6 +609,9 @@ async function main() {
       services.groupBatchers.push(batcher);
     }
 
+    // Pre-warm the SDK session subprocess so the first message doesn't pay startup cost
+    bot.warmSession().catch(() => {});
+
     // Per-agent cron
     if (agentConfig.features?.cron ?? globalConfig.cronEnabled) {
       const cronService = new CronService(bot);
@@ -605,6 +624,8 @@ async function main() {
     const heartbeatService = new HeartbeatService(bot, {
       enabled: heartbeatConfig?.enabled ?? false,
       intervalMinutes: heartbeatConfig?.intervalMin ?? 30,
+      skipRecentUserMinutes: heartbeatConfig?.skipRecentUserMin ?? globalConfig.heartbeatSkipRecentUserMin,
+      agentKey: agentConfig.name,
       prompt: heartbeatConfig?.prompt || process.env.HEARTBEAT_PROMPT,
       promptFile: heartbeatConfig?.promptFile,
       workingDir: globalConfig.workingDir,
@@ -695,6 +716,7 @@ async function main() {
     return {
       name,
       agentId: status.agentId,
+      conversationId: status.conversationId,
       channels: status.channels,
       features: {
         cron: cfg?.features?.cron ?? globalConfig.cronEnabled,

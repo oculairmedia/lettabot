@@ -54,6 +54,7 @@ export interface AgentConfig {
     heartbeat?: {
       enabled: boolean;
       intervalMin?: number;
+      skipRecentUserMin?: number; // Skip auto-heartbeats for N minutes after user message (0 disables)
       prompt?: string;       // Custom heartbeat prompt (replaces default body)
       promptFile?: string;   // Path to prompt file (re-read each tick for live editing)
     };
@@ -118,6 +119,7 @@ export interface LettaBotConfig {
     heartbeat?: {
       enabled: boolean;
       intervalMin?: number;
+      skipRecentUserMin?: number; // Skip auto-heartbeats for N minutes after user message (0 disables)
       prompt?: string;       // Custom heartbeat prompt (replaces default body)
       promptFile?: string;   // Path to prompt file (re-read each tick for live editing)
     };
