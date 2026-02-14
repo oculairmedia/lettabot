@@ -48,6 +48,11 @@ export interface AgentConfig {
     discord?: DiscordConfig;
     matrix?: MatrixConfig;
   };
+  /** Conversation routing */
+  conversations?: {
+    mode?: 'shared' | 'per-channel';  // Default: shared (single conversation across all channels)
+    heartbeat?: string;               // "dedicated" | "last-active" | "<channel>" (default: last-active)
+  };
   /** Features for this agent */
   features?: {
     cron?: boolean;
@@ -57,6 +62,7 @@ export interface AgentConfig {
       skipRecentUserMin?: number; // Skip auto-heartbeats for N minutes after user message (0 disables)
       prompt?: string;       // Custom heartbeat prompt (replaces default body)
       promptFile?: string;   // Path to prompt file (re-read each tick for live editing)
+      target?: string;       // Delivery target ("telegram:123", "slack:C123", etc.)
     };
     maxToolCalls?: number;
   };
@@ -113,6 +119,12 @@ export interface LettaBotConfig {
     matrix?: MatrixConfig;
   };
 
+  // Conversation routing
+  conversations?: {
+    mode?: 'shared' | 'per-channel';  // Default: shared (single conversation across all channels)
+    heartbeat?: string;               // "dedicated" | "last-active" | "<channel>" (default: last-active)
+  };
+
   // Features
   features?: {
     cron?: boolean;
@@ -122,6 +134,7 @@ export interface LettaBotConfig {
       skipRecentUserMin?: number; // Skip auto-heartbeats for N minutes after user message (0 disables)
       prompt?: string;       // Custom heartbeat prompt (replaces default body)
       promptFile?: string;   // Path to prompt file (re-read each tick for live editing)
+      target?: string;       // Delivery target ("telegram:123", "slack:C123", etc.)
     };
     inlineImages?: boolean;   // Send images directly to the LLM (default: true). Set false to only send file paths.
     maxToolCalls?: number;  // Abort if agent calls this many tools in one turn (default: 100)
@@ -184,6 +197,8 @@ export interface GroupConfig {
   mode?: GroupMode;
   /** Only process group messages from these user IDs. Omit to allow all users. */
   allowedUsers?: string[];
+  /** Process messages from other bots instead of dropping them. Default: false. */
+  receiveBotMessages?: boolean;
   /**
    * @deprecated Use mode: "mention-only" (true) or "open" (false).
    */
@@ -230,6 +245,7 @@ export interface SlackConfig {
 
 export interface WhatsAppConfig {
   enabled: boolean;
+  sessionPath?: string;   // Auth/session directory (default: ./data/whatsapp-session)
   selfChat?: boolean;
   dmPolicy?: 'pairing' | 'allowlist' | 'open';
   allowedUsers?: string[];
@@ -246,6 +262,9 @@ export interface WhatsAppConfig {
 export interface SignalConfig {
   enabled: boolean;
   phone?: string;
+  cliPath?: string;     // Path to signal-cli binary (default: "signal-cli")
+  httpHost?: string;    // Daemon HTTP host (default: "127.0.0.1")
+  httpPort?: number;    // Daemon HTTP port (default: 8090)
   selfChat?: boolean;
   dmPolicy?: 'pairing' | 'allowlist' | 'open';
   allowedUsers?: string[];

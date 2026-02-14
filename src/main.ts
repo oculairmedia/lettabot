@@ -345,7 +345,7 @@ function createChannelsForAgent(
       console.warn('[WhatsApp] Only use this if this is a dedicated bot number, not your personal WhatsApp.');
     }
     adapters.push(new WhatsAppAdapter({
-      sessionPath: process.env.WHATSAPP_SESSION_PATH || './data/whatsapp-session',
+      sessionPath: agentConfig.channels.whatsapp.sessionPath || process.env.WHATSAPP_SESSION_PATH || './data/whatsapp-session',
       dmPolicy: agentConfig.channels.whatsapp.dmPolicy || 'pairing',
       allowedUsers: agentConfig.channels.whatsapp.allowedUsers && agentConfig.channels.whatsapp.allowedUsers.length > 0
         ? agentConfig.channels.whatsapp.allowedUsers
@@ -366,9 +366,9 @@ function createChannelsForAgent(
     }
     adapters.push(new SignalAdapter({
       phoneNumber: agentConfig.channels.signal.phone,
-      cliPath: process.env.SIGNAL_CLI_PATH || 'signal-cli',
-      httpHost: process.env.SIGNAL_HTTP_HOST || '127.0.0.1',
-      httpPort: parseInt(process.env.SIGNAL_HTTP_PORT || '8090', 10),
+      cliPath: agentConfig.channels.signal.cliPath || process.env.SIGNAL_CLI_PATH || 'signal-cli',
+      httpHost: agentConfig.channels.signal.httpHost || process.env.SIGNAL_HTTP_HOST || '127.0.0.1',
+      httpPort: agentConfig.channels.signal.httpPort || parseInt(process.env.SIGNAL_HTTP_PORT || '8090', 10),
       dmPolicy: agentConfig.channels.signal.dmPolicy || 'pairing',
       allowedUsers: agentConfig.channels.signal.allowedUsers && agentConfig.channels.signal.allowedUsers.length > 0
         ? agentConfig.channels.signal.allowedUsers
@@ -551,6 +551,8 @@ async function main() {
       disallowedTools: globalConfig.disallowedTools,
       displayName: agentConfig.displayName,
       maxToolCalls: agentConfig.features?.maxToolCalls,
+      conversationMode: agentConfig.conversations?.mode || 'shared',
+      heartbeatConversation: agentConfig.conversations?.heartbeat || 'last-active',
       skills: {
         cronEnabled: agentConfig.features?.cron ?? globalConfig.cronEnabled,
         googleEnabled: !!agentConfig.integrations?.google?.enabled || !!agentConfig.polling?.gmail?.enabled,
@@ -629,7 +631,7 @@ async function main() {
       prompt: heartbeatConfig?.prompt || process.env.HEARTBEAT_PROMPT,
       promptFile: heartbeatConfig?.promptFile,
       workingDir: globalConfig.workingDir,
-      target: parseHeartbeatTarget(process.env.HEARTBEAT_TARGET),
+      target: parseHeartbeatTarget(heartbeatConfig?.target) || parseHeartbeatTarget(process.env.HEARTBEAT_TARGET),
     });
     if (heartbeatConfig?.enabled) {
       heartbeatService.start();
@@ -697,7 +699,7 @@ async function main() {
 
   // Start API server - uses gateway for delivery
   const apiPort = parseInt(process.env.PORT || '8080', 10);
-  const apiHost = process.env.API_HOST; // undefined = 127.0.0.1 (secure default)
+  const apiHost = process.env.API_HOST || (isContainerDeploy ? '0.0.0.0' : undefined); // Container platforms need 0.0.0.0 for health checks
   const apiCorsOrigin = process.env.API_CORS_ORIGIN; // undefined = same-origin only
   const apiServer = createApiServer(gateway, {
     port: apiPort,
