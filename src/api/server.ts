@@ -38,6 +38,10 @@ type ResolvedChatRequest = {
   resolvedName: string;
 };
 
+export interface UpgradeHandler {
+  handleUpgrade(req: import('http').IncomingMessage, socket: import('stream').Duplex, head: Buffer): boolean;
+}
+
 interface ServerOptions {
   port: number;
   apiKey: string;
@@ -48,6 +52,7 @@ interface ServerOptions {
   agentChannels?: Map<string, string[]>; // Channel IDs per agent name
   agentConversationModes?: Map<string, string>; // agentName -> conversationMode (shared|per-channel|per-chat|disabled)
   sessionInvalidators?: Map<string, (key?: string) => void>; // Invalidate live sessions after store writes
+  upgradeHandlers?: UpgradeHandler[];
 }
 
 /**
@@ -884,6 +889,16 @@ export function createApiServer(deliverer: AgentRouter, options: ServerOptions):
   // Bind to localhost by default for security (prevents network exposure on bare metal)
   // Use API_HOST=0.0.0.0 in Docker to expose on all interfaces
   const host = options.host || '127.0.0.1';
+  if (options.upgradeHandlers?.length) {
+    server.on('upgrade', (req, socket, head) => {
+      for (const handler of options.upgradeHandlers!) {
+        if (handler.handleUpgrade(req, socket, head)) return;
+      }
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+    });
+  }
+
   server.listen(options.port, host, () => {
     log.info(`Server listening on ${host}:${options.port}`);
   });

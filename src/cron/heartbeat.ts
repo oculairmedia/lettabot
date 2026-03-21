@@ -312,9 +312,20 @@ export class HeartbeatService {
       
       this.log.info(`Sending prompt (SILENT MODE):\n${'─'.repeat(50)}\n${message}\n${'─'.repeat(50)}\n`);
       
-      // Send to agent - response text is NOT delivered (silent mode)
-      // Agent must use `lettabot-message` CLI via Bash to send messages
-      const response = await this.bot.sendToAgent(message, triggerContext);
+      // Clear OPENCODE_PROJECT_DIR to prevent Matrix MCP from deriving an OpenCode
+      // identity. Heartbeat sessions should use the Letta agent's identity, not
+      // the OpenCode bridge identity that would be derived from this env var.
+      const savedOpenCodeDir = process.env.OPENCODE_PROJECT_DIR;
+      delete process.env.OPENCODE_PROJECT_DIR;
+
+      let response: string | undefined;
+      try {
+        response = await this.bot.sendToAgent(message, triggerContext);
+      } finally {
+        if (savedOpenCodeDir !== undefined) {
+          process.env.OPENCODE_PROJECT_DIR = savedOpenCodeDir;
+        }
+      }
       
       // Log results
       this.log.info(`Agent finished.`);

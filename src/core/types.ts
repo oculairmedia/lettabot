@@ -22,6 +22,7 @@ export type TriggerType = 'user_message' | 'heartbeat' | 'cron' | 'webhook' | 'f
 export interface TriggerContext {
   type: TriggerType;
   outputMode: OutputMode;
+  conversationId?: string;
   
   // Source info (for user messages)
   sourceChannel?: string;
@@ -154,6 +155,14 @@ export interface SkillsConfig {
   additionalSkills?: string[];
 }
 
+export interface EscalationConfig {
+  enabled?: boolean;
+  model?: string;
+  toolName?: string;
+  /** Max escalation run time in ms before fail-safe restores the original model. Default: 300000 (5 min) */
+  timeoutMs?: number;
+}
+
 import type { SleeptimeTrigger, SleeptimeBehavior, SleeptimeConfig } from '../config/types.js';
 export type { SleeptimeTrigger, SleeptimeBehavior, SleeptimeConfig };
 
@@ -183,6 +192,8 @@ export interface BotConfig {
 
   // Skills
   skills?: SkillsConfig;
+
+  escalation?: EscalationConfig;
 
   // Safety
   maxToolCalls?: number; // Abort if agent calls this many tools in one turn (default: 100)
@@ -217,6 +228,7 @@ export interface BotConfig {
   conversationOverrides?: string[]; // Channels that always use their own conversation (shared mode)
   maxSessions?: number; // Max concurrent sessions in per-chat mode (default: 10, LRU eviction)
   reuseSession?: boolean; // Reuse SDK subprocess across messages (default: true). Set false to eliminate stream state bleed at cost of ~5s latency per message.
+  onGatewayAbort?: (agentId: string) => Promise<number>;
 }
 
 /**

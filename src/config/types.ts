@@ -107,6 +107,12 @@ export interface AgentConfig {
     /** Per-channel display overrides (keys are channel IDs: telegram, bluesky, etc.) */
     channelDisplay?: Record<string, DisplayConfig>;
     autoVoice?: boolean;           // Automatically generate TTS voice memo for every text response
+    escalation?: {
+      enabled?: boolean;
+      model?: string;
+      toolName?: string;
+      timeoutMs?: number;
+    };
     allowedTools?: string[];       // Per-agent tool whitelist (overrides global/env ALLOWED_TOOLS)
     disallowedTools?: string[];    // Per-agent tool blocklist (overrides global/env DISALLOWED_TOOLS)
     logging?: {

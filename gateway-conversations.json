@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "agents": {
+    "agent-2fae4a23-1caa-460d-9033-9f30ac84ed5e": {
+      "conversationId": "conv-21601ac6-55e6-46bc-bd48-e4302f666fa6",
+      "updatedAt": "2026-03-25T01:15:43.765Z"
+    },
+    "agent-7659b796-4723-4d61-98b5-737f874ee652": {
+      "conversationId": "conv-19033825-1b12-4073-8450-24940eb6878f",
+      "updatedAt": "2026-03-17T00:48:28.827Z"
+    },
+    "agent-26dff553-72fd-4e4d-b640-329f8b6d0829": {
+      "conversationId": "conv-b3fccb12-2f9a-460c-92fa-1afeaf7e42c2",
+      "updatedAt": "2026-03-17T15:39:35.013Z"
+    },
+    "agent-5a145be1-3c15-491e-b5a8-e9f3fe1e716e": {
+      "conversationId": "conv-bca5da86-4e51-4e75-99ce-8fc14f33d994",
+      "updatedAt": "2026-03-19T15:22:18.172Z"
+    },
+    "agent-13eb4426-b06f-4d35-ae5a-5d6ca80409f5": {
+      "conversationId": "conv-8cf93c59-a28b-43d9-8950-4df757ae1bf3",
+      "updatedAt": "2026-03-20T21:45:44.096Z"
+    },
+    "agent-a73a455c-80b3-4bbc-b6de-5bcc737aa911": {
+      "conversationId": "conv-0dccc764-1f5a-4f40-9b58-25ef81b537e1",
+      "updatedAt": "2026-03-23T17:01:57.440Z"
+    },
+    "agent-80ac3bb8-1087-412d-a19c-7c8c6aeb5916": {
+      "conversationId": "conv-428f6c6d-b425-4e0b-8ce9-d178d494a71c",
+      "updatedAt": "2026-03-23T17:42:47.270Z"
+    },
+    "agent-6d8ed3f2-98b0-4028-b73b-ac041de4ce52": {
+      "conversationId": "conv-c85f16e1-ac3a-4923-9c3c-19601c15d5e0",
+      "updatedAt": "2026-03-23T18:48:02.249Z"
+    },
+    "agent-870d3dfb-319f-4c52-91f1-72ab46d944a7": {
+      "conversationId": "conv-d775b5fe-0e4d-4678-8c8a-4cc0a0773843",
+      "updatedAt": "2026-03-24T18:37:40.302Z"
+    },
+    "agent-b417b8da-84d2-40dd-97ad-3a35454934f7": {
+      "conversationId": "conv-8eaf93f2-8bbe-4c69-9467-fd6d51a0a826",
+      "updatedAt": "2026-03-25T06:32:39.238Z"
+    },
+    "agent-597b5756-2915-4560-ba6b-91005f085166": {
+      "conversationId": "conv-002a83f6-d869-43af-9447-ee8b7ad08bb4",
+      "updatedAt": "2026-03-25T06:21:20.482Z"
+    }
+  }
+}

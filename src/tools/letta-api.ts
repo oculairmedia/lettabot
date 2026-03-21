@@ -995,3 +995,24 @@ export async function disableAllToolApprovals(agentId: string): Promise<number> 
     return 0;
   }
 }
+
+export async function resolveDefaultConversationId(agentId: string): Promise<string | null> {
+  try {
+    const client = getClient();
+    const conversations = await client.conversations.list({
+      agent_id: agentId,
+      limit: 1,
+      order: 'desc',
+    });
+    if (Array.isArray(conversations) && conversations.length > 0) {
+      const convId = conversations[0].id;
+      log.info(`Resolved default conversation for agent ${agentId}: ${convId}`);
+      return convId;
+    }
+    log.warn(`No conversations found for agent ${agentId}`);
+    return null;
+  } catch (e) {
+    log.warn('Failed to resolve default conversation ID:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}

@@ -10,7 +10,7 @@ import { createAgent, createSession, resumeSession, type Session, type SendMessa
 import type { BotConfig, StreamMsg } from './types.js';
 import { isApprovalConflictError, isConversationMissingError, isAgentMissingFromInitError } from './errors.js';
 import { Store } from './store.js';
-import { updateAgentName, recoverOrphanedConversationApproval, isRecoverableConversationId, recoverPendingApprovalsForAgent } from '../tools/letta-api.js';
+import { updateAgentName, recoverOrphanedConversationApproval, isRecoverableConversationId, recoverPendingApprovalsForAgent, resolveDefaultConversationId } from '../tools/letta-api.js';
 import { installSkillsToAgent, prependSkillDirsToPath } from '../skills/loader.js';
 import { loadMemoryBlocks } from './memory.js';
 import { SYSTEM_PROMPT } from './system-prompt.js';
@@ -365,6 +365,22 @@ export class SessionManager {
       this.log.info(`Discarding stale initialized session (key=${key})`);
       session.close();
       return this.ensureSessionForKey(key, bootstrapRetried);
+    }
+
+    if (session.conversationId === 'default' && sessionAgentId && key !== 'default') {
+      try {
+        const realConvId = await resolveDefaultConversationId(sessionAgentId);
+        if (realConvId) {
+          if (key === 'shared') {
+            this.store.conversationId = realConvId;
+          } else {
+            this.store.setConversationId(key, realConvId);
+          }
+          this.log.info(`Resolved and persisted real conversation ID (key=${key}): ${realConvId}`);
+        }
+      } catch (err) {
+        this.log.warn('Failed to resolve default conversation ID:', err instanceof Error ? err.message : err);
+      }
     }
 
     // Proactive approval detection via bootstrapState().

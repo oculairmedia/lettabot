@@ -303,9 +303,7 @@ async function main() {
   // Validate at least one agent has channels
   const totalChannels = agents.reduce((sum, a) => sum + Object.keys(a.channels).length, 0);
   if (totalChannels === 0) {
-    log.error('No channels configured in any agent.');
-    log.error('Configure channels in lettabot.yaml or set environment variables.');
-    process.exit(1);
+    log.warn('No built-in channels configured. Continuing with API/gateway-only mode.');
   }
 
   const attachmentsDir = resolve(globalConfig.workingDir, 'attachments');
@@ -402,6 +400,7 @@ async function main() {
       redaction: agentConfig.security?.redaction,
       logging: agentConfig.features?.logging ?? yamlConfig.features?.logging,
       cronStorePath,
+      escalation: agentConfig.features?.escalation,
       skills: {
         cronEnabled: agentConfig.features?.cron ?? globalConfig.cronEnabled,
         googleEnabled: !!agentConfig.integrations?.google?.enabled || !!agentConfig.polling?.gmail?.enabled,
@@ -588,6 +587,46 @@ async function main() {
     const logging = a.features?.logging ?? yamlConfig.features?.logging;
     if (logging?.turnLogFile) turnLogFiles[a.name] = logging.turnLogFile;
   }
+  let wsGateway: import('./api/ws-gateway.js').WsGateway | null = null;
+  const gatewayEnabled = process.env.GATEWAY_ENABLED === 'true';
+  if (gatewayEnabled) {
+    const { WsGateway } = await import('./api/ws-gateway.js');
+    const validChannels = new Set(['telegram', 'slack', 'discord', 'whatsapp', 'signal', 'matrix']);
+    const primaryAgentName = agents[0]?.name || 'LettaBot';
+    const primaryStore = agentStores.get(primaryAgentName);
+    wsGateway = new WsGateway({
+      apiKey,
+      onSourceUpdate: (source) => {
+        if (!primaryStore || !validChannels.has(source.channel)) return;
+        primaryStore.lastMessageTarget = {
+          channel: source.channel as import('./core/types.js').ChannelId,
+          chatId: source.chatId,
+          updatedAt: new Date().toISOString(),
+        };
+      },
+      onConversationUpdate: (agentId, conversationId) => {
+        for (const [agentName, store] of agentStores) {
+          const info = store.getInfo();
+          if (info.agentId !== agentId) continue;
+          if (info.conversationId === conversationId) return;
+          store.conversationId = conversationId;
+          sessionInvalidators.get(agentName)?.();
+          log.info(`Gateway conversation synced: agent=${agentName} conv=${conversationId}`);
+          return;
+        }
+      },
+    });
+  }
+
+  if (wsGateway) {
+    for (const name of gateway.getAgentNames()) {
+      const agent = gateway.getAgent(name);
+      if (agent && 'setGatewayAbort' in agent) {
+        (agent as import('./core/bot.js').LettaBot).setGatewayAbort((agentId) => wsGateway!.abortByAgentId(agentId));
+      }
+    }
+  }
+
   const apiServer = createApiServer(gateway, {
     port: apiPort,
     apiKey: apiKey,
@@ -598,8 +637,9 @@ async function main() {
     agentChannels: agentChannelMap,
     agentConversationModes,
     sessionInvalidators,
+    upgradeHandlers: wsGateway ? [wsGateway] : undefined,
   });
-  
+
   // Startup banner
   const bannerAgents = gateway.getAgentNames().map(name => {
     const agent = gateway.getAgent(name)!;

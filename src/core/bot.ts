@@ -323,6 +323,9 @@ export class LettaBot implements AgentSession {
   // In shared mode, a single entry keyed by 'shared' provides legacy behavior.
   private pendingQuestionResolvers: Map<string, (text: string) => void> = new Map();
 
+  // Maps convKey -> abort function for in-flight processMessage runs
+  private activeRunAborts: Map<string, () => void> = new Map();
+
   private conversationOverrides: Set<string> = new Set();
   private readonly sessionManager: SessionManager;
   private readonly turnLogger: TurnLogger | null;
@@ -361,6 +364,127 @@ export class LettaBot implements AgentSession {
       showReasoning: override?.showReasoning ?? base?.showReasoning ?? false,
       reasoningMaxChars: override?.reasoningMaxChars ?? base?.reasoningMaxChars,
     };
+  }
+
+  private getEscalationConfig(): { enabled: boolean; model: string; toolName: string; timeoutMs: number } {
+    return {
+      enabled: this.config.escalation?.enabled ?? false,
+      model: this.config.escalation?.model ?? 'anthropic/opus-4-6',
+      toolName: this.config.escalation?.toolName ?? 'request_deep_analysis',
+      timeoutMs: this.config.escalation?.timeoutMs ?? 5 * 60 * 1000,
+    };
+  }
+
+  private extractEscalationReason(streamMsg: StreamMsg): string {
+    const toolInput = (streamMsg as StreamMsg & { toolInput?: unknown }).toolInput;
+    if (!toolInput || typeof toolInput !== 'object') {
+      return 'Deep analysis requested.';
+    }
+    const reason = (toolInput as { reason?: unknown }).reason;
+    if (typeof reason === 'string' && reason.trim().length > 0) {
+      return reason.trim();
+    }
+    return 'Deep analysis requested.';
+  }
+
+  private async handleEscalation(
+    msg: InboundMessage,
+    convKey: string,
+    reason: string,
+    canUseTool: CanUseToolCallback,
+  ): Promise<string | null> {
+    const escalation = this.getEscalationConfig();
+    if (!escalation.enabled) return null;
+
+    const agentId = this.store.agentId;
+    if (!agentId) return null;
+
+    const originalModel = await getAgentModel(agentId);
+    if (!originalModel) {
+      this.log.warn('Escalation skipped: failed to resolve current model');
+      return null;
+    }
+
+    if (originalModel === escalation.model) {
+      this.log.info('Escalation skipped: already on escalation model');
+      return null;
+    }
+
+    const switched = await updateAgentModel(agentId, escalation.model);
+    if (!switched) {
+      this.log.warn(`Escalation skipped: failed to switch model to ${escalation.model}`);
+      return null;
+    }
+
+    const escalationPrompt = `Deep analysis requested by ${escalation.toolName}. Provide a deeper, more comprehensive answer now. Reason: ${reason}`;
+
+    let response = '';
+    let timedOut = false;
+    const typingInterval = setInterval(() => {
+      void (async () => {
+        const adapter = this.channels.get(msg.channel);
+        if (adapter) {
+          await adapter.sendTypingIndicator(msg.chatId).catch(() => {});
+        }
+      })();
+    }, 4000);
+
+    try {
+      this.log.info(`Escalation: switching model ${originalModel} -> ${escalation.model} (timeout: ${escalation.timeoutMs}ms)`);
+      const run = await this.sessionManager.runSession(escalationPrompt, {
+        retried: true,
+        canUseTool,
+        convKey,
+      });
+
+      const timeoutTimer = setTimeout(async () => {
+        timedOut = true;
+        this.log.error(
+          `Escalation fail-safe triggered after ${escalation.timeoutMs}ms — ` +
+          `aborting escalation run for agent ${agentId.slice(0, 12)}...`
+        );
+        try { await run.session.abort(); } catch { /* best-effort */ }
+        try { await cancelRuns(agentId); } catch { /* best-effort */ }
+      }, escalation.timeoutMs);
+
+      try {
+        for await (const streamMsg of run.stream()) {
+          if (streamMsg.type === 'assistant') {
+            response += streamMsg.content || '';
+          }
+          if (streamMsg.type === 'result') {
+            const resultText = typeof streamMsg.result === 'string' ? streamMsg.result : '';
+            if (!response.trim() && resultText.trim()) {
+              response = resultText;
+            }
+            break;
+          }
+        }
+      } finally {
+        clearTimeout(timeoutTimer);
+      }
+
+      return response.trim() ? response : null;
+    } catch (err) {
+      if (timedOut) {
+        this.log.warn(`Escalation aborted by fail-safe timeout for agent ${agentId.slice(0, 12)}...`);
+      } else {
+        this.log.warn('Escalation stream failed:', err instanceof Error ? err.message : err);
+      }
+      return null;
+    } finally {
+      clearInterval(typingInterval);
+      const restored = await updateAgentModel(agentId, originalModel);
+      if (!restored) {
+        this.log.error(`Escalation restore failed: expected model ${originalModel}`);
+      } else {
+        this.log.info(`Escalation: restored model to ${originalModel}${timedOut ? ' (after timeout)' : ''}`);
+      }
+    }
+  }
+
+  setGatewayAbort(fn: (agentId: string) => Promise<number>): void {
+    this.config.onGatewayAbort = fn;
   }
 
   // =========================================================================
@@ -854,6 +978,38 @@ export class LettaBot implements AgentSession {
           const scope = this.config.conversationMode === 'per-chat' ? 'this chat' : 'this channel';
           return `Conversation reset for ${scope}. Other conversations are unaffected. (Agent memory is preserved.)`;
         }
+      }
+      case 'stop': {
+        const convKey = channelId ? this.resolveConversationKey(channelId, chatId, forcePerChat) : 'shared';
+        let stopped = false;
+
+        const abortFn = this.activeRunAborts.get(convKey);
+        if (abortFn) {
+          abortFn();
+          stopped = true;
+        }
+
+        if (this.config.onGatewayAbort && this.store.agentId) {
+          this.config.onGatewayAbort(this.store.agentId)
+            .then(n => { if (n > 0) this.log.info(`Aborted ${n} gateway session(s)`); })
+            .catch(err => this.log.warn('Gateway abort failed:', err));
+          stopped = true;
+        }
+
+        if (this.store.agentId) {
+          cancelRuns(this.store.agentId).catch(err => this.log.warn('cancelRuns failed:', err));
+        }
+
+        if (stopped) {
+          if (convKey === 'shared') {
+            this.messageQueue.length = 0;
+          } else {
+            this.keyedQueues.delete(convKey);
+          }
+          return '⏹ Stopped.';
+        }
+
+        return 'Nothing running to stop.';
       }
       case 'cancel': {
         const convKey = channelId ? this.resolveConversationKey(channelId, chatId, forcePerChat) : 'shared';
@@ -1360,6 +1516,8 @@ export class LettaBot implements AgentSession {
       const run = await this.sessionManager.runSession(messageToSend, { retried, canUseTool, convKey });
       lap('session send');
       session = run.session;
+      let aborted = false;
+      this.activeRunAborts.set(convKey, () => { aborted = true; session?.abort().catch(() => {}); });
 
       // Stream response with delivery via DisplayPipeline
       let response = '';
@@ -1938,6 +2096,7 @@ export class LettaBot implements AgentSession {
       }
     } finally {
       const finalConvKey = this.resolveConversationKey(msg.channel, msg.chatId, msg.forcePerChat);
+      this.activeRunAborts.delete(finalConvKey);
       // When session reuse is disabled, invalidate after every message to
       // eliminate any possibility of stream state bleed between sequential
       // sends. Costs ~5s subprocess init overhead per message.
