@@ -4,7 +4,7 @@
  * Shared command parsing and help text for all channels.
  */
 
-export const COMMANDS = ['status', 'heartbeat', 'reset', 'cancel', 'stop', 'help', 'start', 'model', 'setconv'] as const;
+export const COMMANDS = ['status', 'heartbeat', 'reset', 'cancel', 'stop', 'approve', 'disapprove', 'help', 'start', 'model', 'setconv'] as const;
 export type Command = typeof COMMANDS[number];
 
 export interface ParsedCommand {
@@ -20,6 +20,8 @@ Commands:
 /reset - Reset conversation (keeps agent memory)
 /cancel - Abort the current agent run
 /stop - Force stop all runs, gateway sessions, and drain queue
+/approve - Approve all pending tool calls for this conversation
+/disapprove [reason] - Deny all pending tool calls for this conversation
 /model - Show current model and list available models
 /model <handle> - Switch to a different model
 /setconv <id> - Set conversation ID for this chat
