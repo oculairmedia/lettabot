@@ -171,6 +171,8 @@ export interface LettaBotConfig {
     // model is configured on the Letta agent server-side, not in config
     // Kept as optional for backward compat (ignored if present in existing configs)
     model?: string;
+    /** Global working directory for runtime data (overridden by WORKING_DIR env var) */
+    workingDir?: string;
     // Triage agent for background tasks (heartbeat routes here when enabled)
     triage?: {
       enabled?: boolean;
