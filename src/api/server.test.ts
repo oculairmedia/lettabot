@@ -283,6 +283,105 @@ describe('POST /api/v1/chat/async', () => {
   });
 });
 
+describe('POST /api/v1/heartbeat', () => {
+  let server: http.Server;
+  let port: number;
+  let triggerFn: ReturnType<typeof vi.fn>;
+
+  beforeAll(async () => {
+    triggerFn = vi.fn().mockResolvedValue(undefined);
+    const triggers = new Map<string, () => Promise<void>>();
+    triggers.set('LettaBot', triggerFn as unknown as () => Promise<void>);
+    server = createApiServer(createMockRouter(), {
+      port: TEST_PORT,
+      apiKey: TEST_API_KEY,
+      host: '127.0.0.1',
+      heartbeatTriggers: triggers,
+    });
+    await new Promise<void>((resolve) => {
+      if (server.listening) { resolve(); return; }
+      server.once('listening', resolve);
+    });
+    port = getPort(server);
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it('returns 401 without api key', async () => {
+    const res = await request(port, 'POST', '/api/v1/heartbeat', '', {
+      'content-type': 'application/json',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('triggers heartbeat for default agent with empty body', async () => {
+    const res = await request(port, 'POST', '/api/v1/heartbeat', '', {
+      'content-type': 'application/json',
+      'x-api-key': TEST_API_KEY,
+    });
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.agent).toBe('LettaBot');
+    expect(triggerFn).toHaveBeenCalled();
+  });
+
+  it('triggers heartbeat for named agent', async () => {
+    triggerFn.mockClear();
+    const res = await request(port, 'POST', '/api/v1/heartbeat', '{"agent":"LettaBot"}', {
+      'content-type': 'application/json',
+      'x-api-key': TEST_API_KEY,
+    });
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.agent).toBe('LettaBot');
+    expect(triggerFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 404 for unknown agent', async () => {
+    const res = await request(port, 'POST', '/api/v1/heartbeat', '{"agent":"UnknownBot"}', {
+      'content-type': 'application/json',
+      'x-api-key': TEST_API_KEY,
+    });
+    expect(res.status).toBe(404);
+    expect(JSON.parse(res.body).error).toContain('Agent not found');
+    expect(JSON.parse(res.body).error).toContain('LettaBot');
+  });
+});
+
+describe('POST /api/v1/heartbeat (no triggers configured)', () => {
+  let server: http.Server;
+  let port: number;
+
+  beforeAll(async () => {
+    server = createApiServer(createMockRouter(), {
+      port: TEST_PORT,
+      apiKey: TEST_API_KEY,
+      host: '127.0.0.1',
+    });
+    await new Promise<void>((resolve) => {
+      if (server.listening) { resolve(); return; }
+      server.once('listening', resolve);
+    });
+    port = getPort(server);
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it('returns 404 when no heartbeat services are configured', async () => {
+    const res = await request(port, 'POST', '/api/v1/heartbeat', '', {
+      'content-type': 'application/json',
+      'x-api-key': TEST_API_KEY,
+    });
+    expect(res.status).toBe(404);
+    expect(JSON.parse(res.body).error).toContain('No heartbeat services configured');
+  });
+});
+
 describe('GET /portal', () => {
   let server: http.Server;
   let port: number;
