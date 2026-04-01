@@ -656,6 +656,12 @@ async function main() {
     }
   }
 
+  const heartbeatTriggers = new Map<string, () => Promise<void>>();
+  for (const hs of services.heartbeatServices) {
+    const name = (hs as any).config?.botName;
+    if (name) heartbeatTriggers.set(name, () => hs.trigger());
+  }
+
   const apiServer = createApiServer(gateway, {
     port: apiPort,
     apiKey: apiKey,
@@ -667,6 +673,7 @@ async function main() {
     agentConversationModes,
     sessionInvalidators,
     upgradeHandlers: wsGateway ? [wsGateway] : undefined,
+    heartbeatTriggers,
   });
 
   // Startup banner

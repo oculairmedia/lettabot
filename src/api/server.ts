@@ -53,6 +53,7 @@ interface ServerOptions {
   agentConversationModes?: Map<string, string>; // agentName -> conversationMode (shared|per-channel|per-chat|disabled)
   sessionInvalidators?: Map<string, (key?: string) => void>; // Invalidate live sessions after store writes
   upgradeHandlers?: UpgradeHandler[];
+  heartbeatTriggers?: Map<string, () => Promise<void>>; // agentName -> trigger fn
 }
 
 /**
@@ -735,6 +736,47 @@ export function createApiServer(deliverer: AgentRouter, options: ServerOptions):
         res.end(JSON.stringify({ agents }));
       } catch (error: any) {
         log.error('Status error:', error);
+        sendError(res, 500, error.message || 'Internal server error');
+      }
+      return;
+    }
+
+    // Route: POST /api/v1/heartbeat - Trigger heartbeat for an agent
+    if (req.url === '/api/v1/heartbeat' && req.method === 'POST') {
+      try {
+        if (!validateApiKey(req.headers, options.apiKey)) {
+          sendError(res, 401, 'Unauthorized');
+          return;
+        }
+        if (!options.heartbeatTriggers || options.heartbeatTriggers.size === 0) {
+          sendError(res, 404, 'No heartbeat services configured');
+          return;
+        }
+
+        let agentName: string | undefined;
+        try {
+          const body = await readBody(req, MAX_BODY_SIZE);
+          if (body.trim()) {
+            const parsed = JSON.parse(body);
+            agentName = parsed.agent;
+          }
+        } catch { /* empty body is fine — triggers first/only agent */ }
+
+        const triggers = options.heartbeatTriggers;
+        const targetName = agentName || triggers.keys().next().value;
+        if (!targetName || !triggers.has(targetName)) {
+          const available = [...triggers.keys()];
+          sendError(res, 404, `Agent not found. Available: ${available.join(', ')}`);
+          return;
+        }
+
+        const trigger = triggers.get(targetName)!;
+        trigger().catch(err => log.error(`Heartbeat trigger error for ${targetName}:`, err));
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, agent: targetName, message: 'Heartbeat triggered (silent mode)' }));
+      } catch (error: any) {
+        log.error('Heartbeat trigger error:', error);
         sendError(res, 500, error.message || 'Internal server error');
       }
       return;
