@@ -254,7 +254,11 @@ export class HeartbeatService {
     this.log.info(`⏰ RUNNING at ${formattedTime} [SILENT MODE]`);
     this.log.info(`${'='.repeat(60)}`);
     
-    // Skip if user sent a message in the configured window (unless manual trigger)
+    // Skip if user sent a message in the configured window (unless manual trigger).
+    // NOTE: When triage routing is enabled, this checks the PRIMARY bot's last
+    // user message — not the triage bot's. This is intentional: triage heartbeats
+    // run autonomously regardless of user activity on the primary agent, because
+    // the triage bot has no direct user interaction (lastUserMessage is always null).
     if (!skipRecentCheck) {
       const { policy, minutes: skipWindowMin, milliseconds: skipWindowMs } = this.getSkipWindow();
       const lastUserMessage = this.bot.getLastUserMessageTime();

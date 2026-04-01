@@ -508,6 +508,10 @@ async function main() {
     // Per-agent heartbeat
     // When triage is enabled, create a dedicated bot targeting the triage agent
     // so heartbeats route to the triage agent instead of the primary agent.
+    // The triage bot needs config parity with the primary bot for fields that
+    // affect SDK session behavior (skills, tools, memfs, maxToolCalls, logging).
+    // Channel-facing features (displayName, sendFile*, autoVoice) are omitted
+    // since the triage bot only handles background heartbeat work.
     let triageBot: LettaBot | undefined;
     const triageConfig = agentConfig.triage;
     if (triageConfig?.enabled && triageConfig.id) {
@@ -517,12 +521,25 @@ async function main() {
         agentName: triageName,
         allowedTools: ensureRequiredTools(agentConfig.features?.allowedTools ?? globalConfig.allowedTools),
         disallowedTools: agentConfig.features?.disallowedTools ?? globalConfig.disallowedTools,
+        maxToolCalls: agentConfig.features?.maxToolCalls,
         memfs: resolvedMemfs,
+        sleeptime: effectiveSleeptime,
         conversationMode: 'shared',
         heartbeatConversation: 'dedicated',
         interruptHeartbeatOnUserMessage: false,
+        reuseSession: agentConfig.conversations?.reuseSession,
+        redaction: agentConfig.security?.redaction,
+        logging: agentConfig.features?.logging ?? yamlConfig.features?.logging,
+        cronStorePath,
+        skills: {
+          cronEnabled: agentConfig.features?.cron ?? globalConfig.cronEnabled,
+          googleEnabled: !!agentConfig.integrations?.google?.enabled || !!agentConfig.polling?.gmail?.enabled,
+          blueskyEnabled: !!agentConfig.channels?.bluesky?.enabled,
+          ttsEnabled: voiceMemoEnabled,
+        },
       });
       triageBot.setAgentId(triageConfig.id);
+      triageBot.warmSession().catch(() => {});
       log.info(`Heartbeat will route to triage agent: ${triageConfig.id}`);
     }
 
