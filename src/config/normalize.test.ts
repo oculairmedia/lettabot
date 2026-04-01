@@ -892,4 +892,108 @@ describe('normalizeAgents', () => {
     expect(agents[0].features?.cron).toBe(true);
     expect(agents[0].features?.heartbeat?.intervalMin).toBe(30);
   });
+
+  it('should preserve triage config from single-agent YAML', () => {
+    const config: LettaBotConfig = {
+      server: { mode: 'cloud' },
+      agent: {
+        name: 'TestBot',
+        id: 'agent-main',
+        triage: {
+          enabled: true,
+          id: 'agent-triage-123',
+        },
+      },
+      channels: {
+        telegram: { enabled: true, token: 'test-token' },
+      },
+    };
+
+    const agents = normalizeAgents(config);
+
+    expect(agents).toHaveLength(1);
+    expect(agents[0].triage).toEqual({
+      enabled: true,
+      id: 'agent-triage-123',
+    });
+  });
+
+  it('should not include triage when not configured', () => {
+    const config: LettaBotConfig = {
+      server: { mode: 'cloud' },
+      agent: { name: 'TestBot' },
+      channels: {
+        telegram: { enabled: true, token: 'test-token' },
+      },
+    };
+
+    const agents = normalizeAgents(config);
+
+    expect(agents[0].triage).toBeUndefined();
+  });
+
+  it('should preserve triage config in multi-agent mode', () => {
+    const agentsArray: AgentConfig[] = [
+      {
+        name: 'Bot1',
+        id: 'agent-main-1',
+        triage: { enabled: true, id: 'agent-triage-1' },
+        channels: {
+          telegram: { enabled: true, token: 'token1' },
+        },
+      },
+      {
+        name: 'Bot2',
+        channels: {
+          slack: { enabled: true, botToken: 'bt', appToken: 'at' },
+        },
+      },
+    ];
+
+    const config: LettaBotConfig = {
+      server: { mode: 'cloud' },
+      agents: agentsArray,
+      agent: { name: 'LettaBot' },
+      channels: {},
+    } as LettaBotConfig;
+
+    const agents = normalizeAgents(config);
+
+    expect(agents[0].triage).toEqual({ enabled: true, id: 'agent-triage-1' });
+    expect(agents[1].triage).toBeUndefined();
+  });
+
+  it('should preserve triage with enabled: false', () => {
+    const config: LettaBotConfig = {
+      server: { mode: 'cloud' },
+      agent: {
+        name: 'TestBot',
+        triage: { enabled: false, id: 'agent-triage-disabled' },
+      },
+      channels: {
+        telegram: { enabled: true, token: 'test-token' },
+      },
+    };
+
+    const agents = normalizeAgents(config);
+
+    expect(agents[0].triage).toEqual({ enabled: false, id: 'agent-triage-disabled' });
+  });
+
+  it('should preserve triage with enabled but no id', () => {
+    const config: LettaBotConfig = {
+      server: { mode: 'cloud' },
+      agent: {
+        name: 'TestBot',
+        triage: { enabled: true },
+      },
+      channels: {
+        telegram: { enabled: true, token: 'test-token' },
+      },
+    };
+
+    const agents = normalizeAgents(config);
+
+    expect(agents[0].triage).toEqual({ enabled: true });
+  });
 });

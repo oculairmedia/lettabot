@@ -498,6 +498,26 @@ async function main() {
     }
 
     // Per-agent heartbeat
+    // When triage is enabled, create a dedicated bot targeting the triage agent
+    // so heartbeats route to the triage agent instead of the primary agent.
+    let triageBot: LettaBot | undefined;
+    const triageConfig = agentConfig.triage;
+    if (triageConfig?.enabled && triageConfig.id) {
+      const triageName = `${agentConfig.name}-triage`;
+      triageBot = new LettaBot({
+        workingDir: resolvedWorkingDir,
+        agentName: triageName,
+        allowedTools: ensureRequiredTools(agentConfig.features?.allowedTools ?? globalConfig.allowedTools),
+        disallowedTools: agentConfig.features?.disallowedTools ?? globalConfig.disallowedTools,
+        memfs: resolvedMemfs,
+        conversationMode: 'shared',
+        heartbeatConversation: 'dedicated',
+        interruptHeartbeatOnUserMessage: false,
+      });
+      triageBot.setAgentId(triageConfig.id);
+      log.info(`Heartbeat will route to triage agent: ${triageConfig.id}`);
+    }
+
     const heartbeatService = new HeartbeatService(bot, {
       enabled: heartbeatConfig?.enabled ?? false,
       intervalMinutes: heartbeatConfig?.intervalMin ?? 240,
@@ -511,7 +531,7 @@ async function main() {
       workingDir: resolvedWorkingDir,
       target: parseHeartbeatTarget(heartbeatConfig?.target) || parseHeartbeatTarget(process.env.HEARTBEAT_TARGET),
       botName: agentConfig.name,
-    });
+    }, triageBot);
     if (heartbeatConfig?.enabled) {
       heartbeatService.start();
       services.heartbeatServices.push(heartbeatService);
@@ -594,8 +614,28 @@ async function main() {
     const validChannels = new Set(['telegram', 'slack', 'discord', 'whatsapp', 'signal', 'matrix']);
     const primaryAgentName = agents[0]?.name || 'LettaBot';
     const primaryStore = agentStores.get(primaryAgentName);
+    const { AgentSessionManager } = await import('./api/agent-session-manager.js');
+    const gatewayConversationUpdate = (agentId: string, conversationId: string) => {
+      for (const [agentName, store] of agentStores) {
+        const info = store.getInfo();
+        if (info.agentId !== agentId) continue;
+        if (info.conversationId === conversationId) return;
+        store.conversationId = conversationId;
+        sessionInvalidators.get(agentName)?.();
+        log.info(`Gateway conversation synced: agent=${agentName} conv=${conversationId}`);
+        return;
+      }
+    };
     wsGateway = new WsGateway({
       apiKey,
+      sessionManager: new AgentSessionManager({
+        sessionDefaults: {
+          permissionMode: 'bypassPermissions',
+          memfs: false,
+          disallowedTools: globalConfig.disallowedTools,
+        },
+        onConversationUpdate: gatewayConversationUpdate,
+      }),
       onSourceUpdate: (source) => {
         if (!primaryStore || !validChannels.has(source.channel)) return;
         primaryStore.lastMessageTarget = {
@@ -603,17 +643,6 @@ async function main() {
           chatId: source.chatId,
           updatedAt: new Date().toISOString(),
         };
-      },
-      onConversationUpdate: (agentId, conversationId) => {
-        for (const [agentName, store] of agentStores) {
-          const info = store.getInfo();
-          if (info.agentId !== agentId) continue;
-          if (info.conversationId === conversationId) return;
-          store.conversationId = conversationId;
-          sessionInvalidators.get(agentName)?.();
-          log.info(`Gateway conversation synced: agent=${agentName} conv=${conversationId}`);
-          return;
-        }
       },
     });
   }

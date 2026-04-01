@@ -451,3 +451,142 @@ describe('HeartbeatService memfs health check', () => {
     expect(bot.sendToAgent).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── Triage agent routing ───────────────────────────────────────────────
+
+describe('HeartbeatService triage routing', () => {
+  let tmpDir: string;
+  let originalDataDir: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = resolve(tmpdir(), `heartbeat-triage-test-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+    originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tmpDir;
+  });
+
+  afterEach(() => {
+    if (originalDataDir === undefined) {
+      delete process.env.DATA_DIR;
+    } else {
+      process.env.DATA_DIR = originalDataDir;
+    }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('routes heartbeat to triageBot when provided', async () => {
+    const mainBot = createMockBot();
+    const triageBot = createMockBot();
+
+    const service = new HeartbeatService(mainBot, createConfig({ workingDir: tmpDir }), triageBot);
+
+    await service.trigger();
+
+    expect(triageBot.sendToAgent).toHaveBeenCalledTimes(1);
+    expect(mainBot.sendToAgent).not.toHaveBeenCalled();
+  });
+
+  it('falls back to main bot when no triageBot is provided', async () => {
+    const mainBot = createMockBot();
+
+    const service = new HeartbeatService(mainBot, createConfig({ workingDir: tmpDir }));
+
+    await service.trigger();
+
+    expect(mainBot.sendToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses main bot for skip logic even when triageBot is provided', async () => {
+    const mainBot = createMockBot();
+    const triageBot = createMockBot();
+
+    (mainBot.getLastUserMessageTime as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Date(Date.now() - 2 * 60 * 1000),
+    );
+
+    const service = new HeartbeatService(mainBot, createConfig({
+      workingDir: tmpDir,
+      skipRecentPolicy: 'fixed',
+      skipRecentUserMinutes: 5,
+    }), triageBot);
+
+    await (service as any).runHeartbeat(false);
+
+    expect(triageBot.sendToAgent).not.toHaveBeenCalled();
+    expect(mainBot.sendToAgent).not.toHaveBeenCalled();
+  });
+
+  it('sends silent mode prompt to triageBot with correct trigger context', async () => {
+    const mainBot = createMockBot();
+    const triageBot = createMockBot();
+
+    const service = new HeartbeatService(mainBot, createConfig({ workingDir: tmpDir }), triageBot);
+
+    await service.trigger();
+
+    const [message, context] = (triageBot.sendToAgent as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(message).toContain(SILENT_MODE_PREFIX);
+    expect(context).toEqual({ type: 'heartbeat', outputMode: 'silent' });
+  });
+
+  it('logs error from triageBot without crashing', async () => {
+    const mainBot = createMockBot();
+    const triageBot = createMockBot();
+    (triageBot.sendToAgent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('triage agent unavailable'));
+
+    const service = new HeartbeatService(mainBot, createConfig({ workingDir: tmpDir }), triageBot);
+
+    await expect(service.trigger()).resolves.not.toThrow();
+    expect(triageBot.sendToAgent).toHaveBeenCalledTimes(1);
+    expect(mainBot.sendToAgent).not.toHaveBeenCalled();
+  });
+
+  it('resolves todos from main bot agent key, not triage bot', async () => {
+    const mainBot = createMockBot();
+    const triageBot = createMockBot();
+    (mainBot.getStatus as ReturnType<typeof vi.fn>).mockReturnValue({
+      agentId: 'main-agent-id',
+      conversationId: null,
+      channels: [],
+    });
+    (triageBot.getStatus as ReturnType<typeof vi.fn>).mockReturnValue({
+      agentId: 'triage-agent-id',
+      conversationId: null,
+      channels: [],
+    });
+
+    addTodo('main-agent-id', {
+      text: 'Task from main agent',
+      due: '2026-02-13T08:00:00.000Z',
+    });
+
+    const service = new HeartbeatService(mainBot, createConfig({
+      workingDir: tmpDir,
+      agentKey: 'main-agent-id',
+    }), triageBot);
+
+    await service.trigger();
+
+    const sentMessage = (triageBot.sendToAgent as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(sentMessage).toContain('Task from main agent');
+  });
+
+  it('uses custom promptFile content when routing to triageBot', async () => {
+    const promptPath = resolve(tmpDir, 'triage-prompt.txt');
+    writeFileSync(promptPath, 'Run triage tasks.');
+
+    const mainBot = createMockBot();
+    const triageBot = createMockBot();
+
+    const service = new HeartbeatService(mainBot, createConfig({
+      workingDir: tmpDir,
+      promptFile: 'triage-prompt.txt',
+    }), triageBot);
+
+    await service.trigger();
+
+    const sentMessage = (triageBot.sendToAgent as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(sentMessage).toContain('Run triage tasks.');
+    expect(mainBot.sendToAgent).not.toHaveBeenCalled();
+  });
+});

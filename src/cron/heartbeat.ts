@@ -78,11 +78,13 @@ export interface HeartbeatConfig {
 export class HeartbeatService {
   private readonly log;
   private bot: AgentSession;
+  private triageBot: AgentSession | null;
   private config: HeartbeatConfig;
   private intervalId: NodeJS.Timeout | null = null;
   
-  constructor(bot: AgentSession, config: HeartbeatConfig) {
+  constructor(bot: AgentSession, config: HeartbeatConfig, triageBot?: AgentSession) {
     this.bot = bot;
+    this.triageBot = triageBot ?? null;
     this.config = config;
     this.log = createLogger('Heartbeat', config.botName);
   }
@@ -201,7 +203,8 @@ export class HeartbeatService {
     
     const intervalMs = this.config.intervalMinutes * 60 * 1000;
     
-    this.log.info(`Starting in SILENT MODE (every ${this.config.intervalMinutes} minutes)`);
+    const routeLabel = this.triageBot ? ' → triage agent' : '';
+    this.log.info(`Starting in SILENT MODE (every ${this.config.intervalMinutes} minutes${routeLabel})`);
     this.log.info(`First heartbeat in ${this.config.intervalMinutes} minutes`);
     
     // Wait full interval before first heartbeat (don't fire on startup)
@@ -275,7 +278,8 @@ export class HeartbeatService {
     // Pre-flight: check for dirty memfs state that could cause session init failures
     this.checkMemfsHealth();
 
-    this.log.info(`Sending heartbeat to agent...`);
+    const targetLabel = this.triageBot ? 'triage agent' : 'agent';
+    this.log.info(`Sending heartbeat to ${targetLabel}...`);
     
     logEvent('heartbeat_running', { 
       time: now.toISOString(),
@@ -318,9 +322,10 @@ export class HeartbeatService {
       const savedOpenCodeDir = process.env.OPENCODE_PROJECT_DIR;
       delete process.env.OPENCODE_PROJECT_DIR;
 
+      const targetBot = this.triageBot ?? this.bot;
       let response: string | undefined;
       try {
-        response = await this.bot.sendToAgent(message, triggerContext);
+        response = await targetBot.sendToAgent(message, triggerContext);
       } finally {
         if (savedOpenCodeDir !== undefined) {
           process.env.OPENCODE_PROJECT_DIR = savedOpenCodeDir;

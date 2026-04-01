@@ -59,6 +59,11 @@ export interface AgentConfig {
   name: string;
   /** Use existing agent ID (skip creation) */
   id?: string;
+  /** Triage agent for background tasks (heartbeat routes here when enabled) */
+  triage?: {
+    enabled?: boolean;
+    id?: string;
+  };
   /** Display name prefixed to outbound messages (e.g. "💜 Signo") */
   displayName?: string;
   /** Model for initial agent creation */
@@ -166,6 +171,11 @@ export interface LettaBotConfig {
     // model is configured on the Letta agent server-side, not in config
     // Kept as optional for backward compat (ignored if present in existing configs)
     model?: string;
+    // Triage agent for background tasks (heartbeat routes here when enabled)
+    triage?: {
+      enabled?: boolean;
+      id?: string;
+    };
   };
 
   // BYOK providers (api mode only)
@@ -881,6 +891,7 @@ export function normalizeAgents(config: LettaBotConfig): AgentConfig[] {
     id,
     displayName: config.agent?.displayName,
     model,
+    triage: config.agent?.triage,
     channels,
     conversations: config.conversations,
     features: hasFeatures ? features : config.features,
