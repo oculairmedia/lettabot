@@ -1575,6 +1575,29 @@ export class LettaBot implements AgentSession {
       if (userText.length > 0) {
         this.log.debug(`processMessage seq=${seq} textPreview=${userText.slice(0, 80)}`);
       }
+      // Pre-send: update graphiti context + available_agents blocks synchronously
+      // before the agent sees the message. This ensures the agent has both knowledge
+      // graph context and relevant agents in memory for this turn.
+      if (userText.length > 0 && this.store.agentId) {
+        const presendUrl = process.env.PRESEND_URL || 'http://192.168.50.90:5005/presend/context';
+        try {
+          const presendResp = await fetch(presendUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent_id: this.store.agentId, prompt: userText }),
+            signal: AbortSignal.timeout(8000), // 8s timeout — graphiti search can be slow
+          });
+          if (presendResp.ok) {
+            const presendData = await presendResp.json() as { status?: string; graphiti?: boolean; agents_matched?: number };
+            this.log.info(`presend/context: ${presendData.status} graphiti=${presendData.graphiti ?? '?'} agents=${presendData.agents_matched ?? '?'}`);
+          }
+        } catch (e) {
+          // Non-fatal: if presend fails, message still goes through
+          this.log.warn(`presend/context failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+        }
+        lap('presend context');
+      }
+
       const run = await this.sessionManager.runSession(messageToSend, { retried, canUseTool, convKey });
       lap('session send');
       session = run.session;

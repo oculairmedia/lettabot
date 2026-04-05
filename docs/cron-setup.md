@@ -132,6 +132,66 @@ By default, automatic heartbeats are skipped for half the heartbeat interval (`s
 
 You can trigger a heartbeat manually via the `/heartbeat` command in any channel.
 
+### HTTP API Trigger
+
+You can also trigger heartbeats programmatically via the REST API. This is useful for external automation, monitoring scripts, or testing.
+
+**Endpoint:** `POST /api/v1/heartbeat`
+
+**Authentication:** Requires `X-Api-Key` header (or `Authorization: Bearer <key>`). The API key is auto-generated on first run and saved to `lettabot-api.json`, or set via `LETTABOT_API_KEY` env var.
+
+**Request body** (optional):
+
+```json
+{
+  "agent": "Triage"
+}
+```
+
+If omitted, the first configured heartbeat agent is triggered.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "agent": "LettaBot",
+  "message": "Heartbeat triggered (silent mode)"
+}
+```
+
+**Examples:**
+
+```bash
+# Trigger default agent heartbeat
+curl -X POST http://localhost:8407/api/v1/heartbeat \
+  -H "X-Api-Key: YOUR_API_KEY"
+
+# Trigger a specific agent by name
+curl -X POST http://localhost:8407/api/v1/heartbeat \
+  -H "X-Api-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent": "Triage"}'
+```
+
+**Error responses:**
+
+| Status | Meaning |
+|--------|---------|
+| `401` | Missing or invalid API key |
+| `404` | No heartbeat services configured, or agent name not found |
+| `500` | Internal error during trigger |
+
+When an agent name is not found, the response includes available agent names:
+
+```json
+{
+  "error": "Agent not found. Available: LettaBot, Triage"
+}
+```
+
+> **Note:** The heartbeat runs in **Silent Mode** — the agent's response is not automatically delivered. The API returns immediately after triggering; the heartbeat executes asynchronously.
+
 ### How It Works
 
 1. At each interval (or when `/heartbeat` is called), the agent receives a heartbeat message

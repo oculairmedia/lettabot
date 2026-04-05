@@ -264,23 +264,133 @@ export class WsGateway {
     }
 
     try {
-      // Deduplicate tool_call chunks: the SDK streams tool_call events token-by-token
-      // as arguments are generated, so a single tool call produces many wire events
-      // with the same toolCallId. Only forward the first chunk per unique toolCallId.
-      // (mirrors bot.ts lines 565-568)
-      const seenToolCallIds = new Set<string>();
+      // --- Tool call accumulation ---
+      // The SDK streams tool_call events token-by-token as arguments are generated,
+      // so a single tool call produces many wire events with the same toolCallId but
+      // progressively more complete arguments. We buffer them and flush a single
+      // complete tool_call when the next semantic event type arrives (mirroring the
+      // bot's session-manager dedupedStream pattern).
+      const pendingToolCalls = new Map<string, { msg: SDKMessage; accumulatedArgs: string }>();
+      let lastPendingToolCallId: string | null = null;
+      let anonToolCallCounter = 0;
       // Track toolCallId → toolName so we can enrich tool_result events
       // (SDK tool_result only carries toolCallId, not toolName)
       const toolNameMap = new Map<string, string>();
-      for await (const event of this.sessions.sendAndStream(connId, msg.content)) {
-        if (event.type === 'tool_call' && event.toolCallId) {
-          if (seenToolCallIds.has(event.toolCallId)) continue;
-          seenToolCallIds.add(event.toolCallId);
-          if (event.toolName) {
-            toolNameMap.set(event.toolCallId, event.toolName);
+
+      /** Merge tool argument strings, handling both delta and cumulative chunking. */
+      const mergeToolArgs = (existing: string, incoming: string): string => {
+        if (!incoming) return existing;
+        if (!existing) return incoming;
+        if (incoming === existing) return existing;
+        // Cumulative: latest chunk includes all prior text
+        if (incoming.startsWith(existing)) return incoming;
+        if (existing.endsWith(incoming)) return existing;
+        // Delta: each chunk is an append
+        return `${existing}${incoming}`;
+      };
+
+      /** Flush buffered tool calls with fully accumulated arguments. */
+      const flushPendingToolCalls = () => {
+        for (const [, pending] of pendingToolCalls) {
+          let toolInput: Record<string, unknown> = {};
+          if (pending.accumulatedArgs) {
+            try { toolInput = JSON.parse(pending.accumulatedArgs); }
+            catch { toolInput = { raw: pending.accumulatedArgs }; }
+          } else {
+            // No rawArguments — use the original toolInput from the first chunk
+            toolInput = (pending.msg as any).toolInput ?? {};
           }
+          const enriched = { ...pending.msg, toolInput } as SDKMessage;
+          const tcName = (enriched as any).toolName as string | undefined;
+          const tcId = (enriched as any).toolCallId as string | undefined;
+          if (tcName && tcId) {
+            toolNameMap.set(tcId, tcName);
+          }
+          this.forwardStreamEvent(ws, connId, enriched, msg.request_id, toolNameMap);
         }
-        this.forwardStreamEvent(ws, connId, event, msg.request_id, toolNameMap);
+        pendingToolCalls.clear();
+        lastPendingToolCallId = null;
+      };
+
+      // Buffer assistant text to detect <no-reply/> marker.
+      // Tokens arrive one-by-one, so we accumulate and only forward once
+      // we're sure it's not a no-reply suppression. (mirrors bot.ts mayBeHidden logic)
+      let assistantBuffer = '';
+      const bufferedEvents: Array<{ content: string; uuid?: string }> = [];
+
+      const flushAssistantBuffer = () => {
+        for (const ev of bufferedEvents) {
+          this.send(ws, { type: 'stream', event: 'assistant', content: ev.content, uuid: ev.uuid, request_id: msg.request_id });
+        }
+        bufferedEvents.length = 0;
+      };
+
+      for await (const event of this.sessions.sendAndStream(connId, msg.content)) {
+        // --- Tool call accumulation ---
+        if (event.type === 'tool_call') {
+          const tc = event as import('@letta-ai/letta-code-sdk').SDKToolCallMessage;
+          let id: string | undefined = tc.toolCallId;
+          if (!id) {
+            // Tool calls without IDs — assign synthetic or merge with current pending
+            const currentPending = lastPendingToolCallId ? pendingToolCalls.get(lastPendingToolCallId) : null;
+            if (lastPendingToolCallId && currentPending && (((currentPending.msg as any).toolName) || 'unknown') === (tc.toolName || 'unknown')) {
+              id = lastPendingToolCallId;
+            } else {
+              id = `__anon_${++anonToolCallCounter}__`;
+            }
+          }
+          const incoming = tc.rawArguments || '';
+          const existing = pendingToolCalls.get(id);
+          if (existing) {
+            existing.accumulatedArgs = mergeToolArgs(existing.accumulatedArgs, incoming);
+          } else {
+            pendingToolCalls.set(id, { msg: event, accumulatedArgs: incoming });
+          }
+          lastPendingToolCallId = id;
+          continue; // buffer, don't forward yet
+        }
+
+        // Flush pending tool calls on semantic type boundary
+        if (pendingToolCalls.size > 0 && event.type !== 'stream_event') {
+          flushPendingToolCalls();
+        }
+
+        // Buffer assistant events to detect and suppress <no-reply/>
+        if (event.type === 'assistant') {
+          if (this.isInternalMessage(event.content)) continue;
+          assistantBuffer += event.content ?? '';
+          const trimmed = assistantBuffer.trim();
+          const mayBeNoReply = '<no-reply/>'.startsWith(trimmed);
+
+          if (mayBeNoReply) {
+            // Could still become <no-reply/> — hold it
+            bufferedEvents.push({ content: event.content, uuid: event.uuid });
+          } else {
+            // Definitely not <no-reply/> — flush everything we held back, then forward normally
+            flushAssistantBuffer();
+            this.send(ws, { type: 'stream', event: 'assistant', content: event.content, uuid: event.uuid, request_id: msg.request_id });
+          }
+        } else {
+          // Non-assistant events flush the buffer (tool calls break the no-reply pattern)
+          if (bufferedEvents.length > 0) {
+            flushAssistantBuffer();
+          }
+          this.forwardStreamEvent(ws, connId, event, msg.request_id, toolNameMap);
+        }
+      }
+
+      // Flush any remaining buffered tool calls at stream end
+      if (pendingToolCalls.size > 0) {
+        flushPendingToolCalls();
+      }
+
+      // After stream ends: suppress if final text was exactly <no-reply/>
+      if (assistantBuffer.trim() === '<no-reply/>') {
+        log.info(`Suppressed <no-reply/> for connection ${connId.slice(0, 8)}`);
+        // Don't flush — discard the buffered events
+      } else if (bufferedEvents.length > 0) {
+        // Partial match that never completed (e.g. "<no-r" then stream ended) — flush it
+        flushAssistantBuffer();
       }
     } catch (err) {
       if (err instanceof SessionBusyError) {
@@ -299,9 +409,12 @@ export class WsGateway {
         if (this.isInternalMessage(msg.content)) break;
         this.send(ws, { type: 'stream', event: 'assistant', content: msg.content, uuid: msg.uuid, request_id: requestId });
         break;
-      case 'tool_call':
-        this.send(ws, { type: 'stream', event: 'tool_call', tool_name: msg.toolName, tool_call_id: msg.toolCallId, uuid: msg.uuid, request_id: requestId });
+      case 'tool_call': {
+        // Include toolInput so clients can display tool call details
+        const toolInput = (msg as any).toolInput ?? {};
+        this.send(ws, { type: 'stream', event: 'tool_call', tool_name: msg.toolName, tool_call_id: msg.toolCallId, tool_input: toolInput, uuid: msg.uuid, request_id: requestId });
         break;
+      }
       case 'tool_result': {
         const resolvedToolName = (msg.toolCallId && toolNameMap?.get(msg.toolCallId)) ?? null;
         this.send(ws, { type: 'stream', event: 'tool_result', content: msg.content, tool_call_id: msg.toolCallId, tool_name: resolvedToolName, is_error: msg.isError, uuid: msg.uuid, request_id: requestId });

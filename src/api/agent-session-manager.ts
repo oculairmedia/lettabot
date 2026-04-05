@@ -285,7 +285,7 @@ export class AgentSessionManager {
    * persisted conversation, re-open with a fresh conversation, and retry
    * the message once.
    */
-  private async *_doSendAndStream(
+   private async *_doSendAndStream(
     managed: ManagedSession,
     connectionId: string,
     message: string,
@@ -294,6 +294,27 @@ export class AgentSessionManager {
     // Clear the aborted flag at the start of each new send
     managed.aborted = false;
     try {
+      // Pre-send: populate graphiti context + agent discovery blocks BEFORE the
+      // agent sees the message.  This is the gateway path — channel-based messages
+      // go through bot.ts which has its own presend hook.
+      if (message.length > 0 && managed.agentId && !isRetry) {
+        const presendUrl = process.env.PRESEND_URL || 'http://192.168.50.90:5005/presend/context';
+        try {
+          const resp = await fetch(presendUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent_id: managed.agentId, prompt: message }),
+            signal: AbortSignal.timeout(8000),
+          });
+          if (resp.ok) {
+            const data = await resp.json() as { status?: string; graphiti?: boolean; agents_matched?: number };
+            log.info(`presend/context: ${data.status} graphiti=${data.graphiti ?? '?'} agents=${data.agents_matched ?? '?'}`);
+          }
+        } catch (e) {
+          log.warn(`presend/context failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+        }
+      }
+
       await managed.session.send(message);
       for await (const msg of managed.session.stream()) {
         managed.lastActivity = Date.now();

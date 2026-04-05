@@ -1,0 +1,13 @@
+diff --git a/node_modules/@letta-ai/letta-code-sdk/dist/index.js b/node_modules/@letta-ai/letta-code-sdk/dist/index.js
+index 5e6b941..87a5f32 100644
+--- a/node_modules/@letta-ai/letta-code-sdk/dist/index.js
++++ b/node_modules/@letta-ai/letta-code-sdk/dist/index.js
+@@ -345,7 +345,7 @@ var INTERACTIVE_APPROVAL_TOOLS = new Set([
+   "ExitPlanMode"
+ ]);
+ var RUNTIME_USER_INPUT_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
+-var HEADLESS_AUTO_ALLOW_TOOLS = new Set(["EnterPlanMode"]);
++var HEADLESS_AUTO_ALLOW_TOOLS = new Set([]);
+ function requiresRuntimeUserInput(toolName) {
+   return RUNTIME_USER_INPUT_TOOLS.has(toolName);
+ }
