@@ -79,6 +79,7 @@ export interface AgentConfig {
     signal?: SignalConfig;
     discord?: DiscordConfig;
     bluesky?: BlueskyConfig;
+    matrix?: MatrixConfig;
   };
   /** Conversation routing */
   conversations?: {
@@ -192,6 +193,7 @@ export interface LettaBotConfig {
     signal?: SignalConfig;
     discord?: DiscordConfig;
     bluesky?: BlueskyConfig;
+    matrix?: MatrixConfig;
   };
 
   // Conversation routing
@@ -442,6 +444,16 @@ export interface BlueskyConfig {
   groups?: Record<string, GroupConfig>; // Use "*" for defaults, DID for overrides
   notifications?: BlueskyNotificationsConfig;
   lists?: Record<string, GroupConfig>;  // List URI -> mode
+}
+
+export interface MatrixConfig {
+  enabled: boolean;
+  /** Homeserver URL (e.g., https://matrix.example.com) */
+  homeserverUrl?: string;
+  /** Access token for the bridge bot */
+  accessToken?: string;
+  /** Enable the WebSocket gateway for Matrix bridge (default: true when matrix is configured) */
+  gateway?: boolean;
 }
 
 export interface BlueskyNotificationsConfig {

@@ -517,6 +517,16 @@ export function configToEnv(config: LettaBotConfig): Record<string, string> {
       }
     }
   }
+  // Matrix (WebSocket gateway bridge)
+  if (config.channels.matrix?.enabled) {
+    env.GATEWAY_ENABLED = 'true';
+    if (config.channels.matrix.homeserverUrl) {
+      env.MATRIX_HOMESERVER_URL = config.channels.matrix.homeserverUrl;
+    }
+    if (config.channels.matrix.accessToken) {
+      env.MATRIX_ACCESS_TOKEN = config.channels.matrix.accessToken;
+    }
+  }
 
   // Features
   if (config.features?.cron) {

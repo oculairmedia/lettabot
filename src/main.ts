@@ -475,11 +475,23 @@ async function main() {
       );
     }
     
-    // Disable tool approvals
+    // Proactively disable tool approvals on startup (prevents stuck approval states)
     if (initialStatus.agentId) {
-      ensureNoToolApprovals(initialStatus.agentId).catch(err => {
-        log.warn(`Failed to check tool approvals:`, err);
-      });
+      try {
+        await ensureNoToolApprovals(initialStatus.agentId);
+        log.info(`Tool approval check passed for agent ${initialStatus.agentId.slice(0, 12)}...`);
+      } catch (err) {
+        log.warn(`Failed to check tool approvals for primary agent:`, err);
+      }
+    }
+    // Also verify triage agent approvals if configured
+    if (agentConfig.triage?.enabled && agentConfig.triage.id) {
+      try {
+        await ensureNoToolApprovals(agentConfig.triage.id);
+        log.info(`Tool approval check passed for triage agent ${agentConfig.triage.id.slice(0, 12)}...`);
+      } catch (err) {
+        log.warn(`Failed to check tool approvals for triage agent:`, err);
+      }
     }
 
     // Create and register channels
@@ -541,6 +553,25 @@ async function main() {
       triageBot.setAgentId(triageConfig.id);
       triageBot.warmSession().catch(() => {});
       log.info(`Heartbeat will route to triage agent: ${triageConfig.id}`);
+
+      // Verify triage agent has essential tools server-side
+      import('./tools/letta-api.js').then(async ({ getAgentTools }) => {
+        try {
+          const tools = await getAgentTools(triageConfig.id!);
+          const toolNames = tools.map(t => t.name);
+          log.info(`Triage agent tools (${tools.length}): ${toolNames.join(', ')}`);
+          
+          // Warn about commonly needed tools for autonomous heartbeat work
+          const recommended = ['matrix_messaging', 'conversation_search', 'search_documents'];
+          const missing = recommended.filter(t => !toolNames.includes(t));
+          if (missing.length > 0) {
+            log.warn(`Triage agent may be missing recommended tools: ${missing.join(', ')}`);
+            log.warn(`Note: SDK-injected tools (Bash, Read, Write, etc.) are available at session level`);
+          }
+        } catch (err) {
+          log.debug(`Could not verify triage agent tools:`, err);
+        }
+      }).catch(() => {});
     }
 
     const heartbeatService = new HeartbeatService(bot, {
@@ -619,6 +650,27 @@ async function main() {
   // Start all agents
   await gateway.start();
   
+  // Periodic tool-approval re-verification (every 30 minutes)
+  // Tools can be re-attached with approvals via API; this ensures headless mode stays clean.
+  const approvalCheckIntervalMs = 30 * 60 * 1000;
+  const approvalCheckTimer = setInterval(async () => {
+    for (const agentConfig of agents) {
+      const store = agentStores.get(agentConfig.name);
+      const agentId = store?.getInfo()?.agentId;
+      if (agentId) {
+        ensureNoToolApprovals(agentId).catch(err =>
+          log.debug(`Periodic approval check failed for ${agentConfig.name}:`, err)
+        );
+      }
+      if (agentConfig.triage?.enabled && agentConfig.triage.id) {
+        ensureNoToolApprovals(agentConfig.triage.id).catch(err =>
+          log.debug(`Periodic approval check failed for ${agentConfig.name}-triage:`, err)
+        );
+      }
+    }
+  }, approvalCheckIntervalMs);
+  approvalCheckTimer.unref(); // Don't keep process alive just for this
+
   // Load/generate API key for CLI authentication
   const apiKey = loadOrGenerateApiKey();
   log.info(`Key: ${apiKey.slice(0, 8)}... (set LETTABOT_API_KEY to customize)`);

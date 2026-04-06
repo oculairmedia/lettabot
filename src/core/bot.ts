@@ -453,6 +453,10 @@ export class LettaBot implements AgentSession {
             response += streamMsg.content || '';
           }
           if (streamMsg.type === 'result') {
+            // Skip non-terminal results (intermediate step results with no content)
+            if (streamMsg.success === undefined && !streamMsg.error && !streamMsg.result) {
+              continue;
+            }
             const resultText = typeof streamMsg.result === 'string' ? streamMsg.result : '';
             if (!response.trim() && resultText.trim()) {
               response = resultText;
@@ -2310,6 +2314,14 @@ export class LettaBot implements AgentSession {
               if (resultRunState === 'stale') {
                 sawStaleDuplicateResult = true;
                 break;
+              }
+
+              // Non-terminal results: if the result has no content, no error, and
+              // success is not explicitly set, it may be an intermediate step result.
+              // Continue consuming the stream to get the terminal result.
+              if (msg.success === undefined && !msg.error && !msg.result) {
+                this.log.debug(`sendToAgent: skipping non-terminal result (key=${convKey})`);
+                continue;
               }
 
               // TODO(letta-code-sdk#31): Remove once SDK handles HITL approvals in bypassPermissions mode.

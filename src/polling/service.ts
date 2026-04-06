@@ -124,6 +124,8 @@ export class PollingService {
   // Track seen email IDs per account to detect new emails (persisted to disk)
   private seenEmailIdsByAccount: Map<string, Set<string>> = new Map();
   private seenEmailsPath: string;
+  // Track consecutive OAuth token errors per account for recovery logic
+  private tokenErrorCounts: Map<string, number> = new Map();
   
   constructor(bot: AgentSession, config: PollingConfig) {
     this.bot = bot;
@@ -277,8 +279,38 @@ export class PollingService {
       });
       
       if (result.status !== 0) {
-        log.info(`Gmail check failed for ${account}: ${result.stderr || 'unknown error'}`);
+        const stderr = result.stderr || '';
+        // Detect OAuth token corruption patterns and provide actionable guidance
+        const isTokenError = /token|oauth|auth|credential|invalid_grant|expired|refresh/i.test(stderr);
+        if (isTokenError) {
+          const count = (this.tokenErrorCounts.get(account) ?? 0) + 1;
+          this.tokenErrorCounts.set(account, count);
+          if (count === 1 || count % 5 === 0) {
+            log.warn(`Gmail OAuth token error for ${account} (attempt ${count}): ${stderr.slice(0, 200)}`);
+            log.warn(`If persistent, try: gog auth login --account ${account}`);
+          }
+          // After 3 consecutive failures, attempt token refresh
+          if (count === 3) {
+            log.info(`Attempting automatic token refresh for ${account}...`);
+            const refreshResult = spawnSync('gog', ['auth', 'refresh', '--account', account], {
+              encoding: 'utf-8',
+              timeout: 30000,
+            });
+            if (refreshResult.status === 0) {
+              log.info(`Token refresh succeeded for ${account}`);
+              this.tokenErrorCounts.set(account, 0);
+            } else {
+              log.warn(`Token refresh failed for ${account}: ${refreshResult.stderr?.slice(0, 200) || 'unknown'}`);
+            }
+          }
+        } else {
+          log.info(`Gmail check failed for ${account}: ${stderr || 'unknown error'}`);
+        }
         return;
+      }
+      // Reset error count on success
+      if (this.tokenErrorCounts?.has(account)) {
+        this.tokenErrorCounts.set(account, 0);
       }
       
       const output = result.stdout?.trim() || '';

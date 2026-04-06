@@ -855,6 +855,64 @@ export function createApiServer(deliverer: AgentRouter, options: ServerOptions):
       return;
     }
 
+    // Route: POST /api/v1/inject - Inject external context into agent conversation
+    // Allows external systems to push context (e.g., webhook data, notifications)
+    // without expecting a response. The agent processes it as a silent background trigger.
+    if (req.url === '/api/v1/inject' && req.method === 'POST') {
+      try {
+        if (!validateApiKey(req.headers, options.apiKey)) {
+          sendError(res, 401, 'Unauthorized');
+          return;
+        }
+
+        const body = await readBody(req, MAX_BODY_SIZE);
+        let request: { text?: string; agent?: string; source?: string; metadata?: Record<string, unknown> };
+        try {
+          request = JSON.parse(body);
+        } catch {
+          sendError(res, 400, 'Invalid JSON body');
+          return;
+        }
+
+        if (!request.text || typeof request.text !== 'string') {
+          sendError(res, 400, 'Missing required field: text');
+          return;
+        }
+        if (request.text.length > MAX_TEXT_LENGTH) {
+          sendError(res, 400, `Text exceeds maximum length (${MAX_TEXT_LENGTH} chars)`);
+          return;
+        }
+
+        // Resolve agent
+        const agentName = request.agent || deliverer.getAgentNames()[0];
+        if (!agentName) {
+          sendError(res, 404, 'No agents configured');
+          return;
+        }
+
+        const source = request.source || 'inject';
+        const metaStr = request.metadata ? `\n\nMetadata: ${JSON.stringify(request.metadata)}` : '';
+        const message = `[External Context Injection - source: ${source}]\n\n${request.text}${metaStr}`;
+
+        // Fire-and-forget: process in background, return 202 immediately
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'accepted', agent: agentName, source }));
+
+        // Process asynchronously
+        deliverer.sendToAgent(agentName, message, {
+          type: 'webhook',
+          outputMode: 'silent',
+          sourceChannel: source as ChannelId,
+        }).catch(err => {
+          log.error(`Inject processing error for agent ${agentName}:`, err);
+        });
+      } catch (error: any) {
+        log.error('Inject endpoint error:', error);
+        sendError(res, 500, error.message || 'Internal server error');
+      }
+      return;
+    }
+
     // Route: GET /api/v1/conversations - List conversations from Letta API
     if (req.url?.startsWith('/api/v1/conversations') && req.method === 'GET') {
       try {
@@ -921,6 +979,118 @@ export function createApiServer(deliverer: AgentRouter, options: ServerOptions):
       const modeScript = `<script>window.__PORTAL_MODE__ = '${portalMode}';</script>`;
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(PORTAL_HTML.replace('</head>', modeScript + '</head>'));
+      return;
+    }
+
+    // Route: GET /api/v1/agent-names - Get current agent names (for Matrix room sync)
+    // Returns mapping of agent ID -> current name from the Letta server.
+    if (req.url?.startsWith('/api/v1/agent-names') && req.method === 'GET') {
+      try {
+        if (!validateApiKey(req.headers, options.apiKey)) {
+          sendError(res, 401, 'Unauthorized');
+          return;
+        }
+
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const agentIds = url.searchParams.get('ids')?.split(',').filter(Boolean) ?? [];
+
+        const { Letta } = await import('@letta-ai/letta-client');
+        const client = new Letta({
+          apiKey: process.env.LETTA_API_KEY || '',
+          baseURL: process.env.LETTA_BASE_URL || 'https://api.letta.com',
+        });
+
+        const names: Record<string, string> = {};
+        const idsToCheck = agentIds.length > 0 ? agentIds : (
+          // If no IDs specified, check all agents in stores
+          [...(options.stores?.keys() ?? [])].map(name => {
+            const store = options.stores?.get(name);
+            return store?.getInfo()?.agentId;
+          }).filter((id): id is string => !!id)
+        );
+
+        for (const agentId of idsToCheck) {
+          try {
+            const agent = await client.agents.retrieve(agentId);
+            if (agent?.name) {
+              names[agentId] = agent.name;
+            }
+          } catch {
+            // Agent may not exist
+          }
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ agents: names }));
+      } catch (error: any) {
+        log.error('Agent names endpoint error:', error);
+        sendError(res, 500, error.message || 'Internal server error');
+      }
+      return;
+    }
+
+    // Route: POST /api/v1/cleanup/orphaned-agents - Check and clean orphaned agent rooms
+    // Used by Matrix bridge to detect deleted agents and archive their rooms
+    if (req.url === '/api/v1/cleanup/orphaned-agents' && req.method === 'POST') {
+      try {
+        if (!validateApiKey(req.headers, options.apiKey)) {
+          sendError(res, 401, 'Unauthorized');
+          return;
+        }
+
+        // Get tracked agent IDs from each upgrade handler (WsGateway)
+        const trackedIds: string[] = [];
+        for (const handler of options.upgradeHandlers ?? []) {
+          if ('listTrackedAgentIds' in handler && typeof (handler as any).listTrackedAgentIds === 'function') {
+            trackedIds.push(...(handler as any).listTrackedAgentIds());
+          }
+        }
+
+        if (trackedIds.length === 0) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ orphaned: [], active: [], checked: 0 }));
+          return;
+        }
+
+        // Check which agents still exist via Letta API
+        const { agentExists } = await import('../tools/letta-api.js');
+        const results: { id: string; exists: boolean }[] = [];
+        for (const id of [...new Set(trackedIds)]) {
+          try {
+            const exists = await agentExists(id);
+            results.push({ id, exists });
+          } catch {
+            results.push({ id, exists: false });
+          }
+        }
+
+        const orphaned = results.filter(r => !r.exists).map(r => r.id);
+        const active = results.filter(r => r.exists).map(r => r.id);
+
+        // Optionally auto-clean (remove from conversation store)
+        const body = await readBody(req, MAX_BODY_SIZE).catch(() => '{}');
+        let autoClean = false;
+        try {
+          const parsed = JSON.parse(body);
+          autoClean = parsed.autoClean === true;
+        } catch { /* ignore */ }
+
+        let removed: string[] = [];
+        if (autoClean && orphaned.length > 0) {
+          for (const handler of options.upgradeHandlers ?? []) {
+            if ('removeOrphanedAgents' in handler && typeof (handler as any).removeOrphanedAgents === 'function') {
+              removed.push(...(handler as any).removeOrphanedAgents(orphaned));
+            }
+          }
+          log.info(`Cleaned ${removed.length} orphaned agent(s) from gateway conversation store`);
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ orphaned, active, checked: results.length, removed }));
+      } catch (error: any) {
+        log.error('Cleanup endpoint error:', error);
+        sendError(res, 500, error.message || 'Internal server error');
+      }
       return;
     }
 

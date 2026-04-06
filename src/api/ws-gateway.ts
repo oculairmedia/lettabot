@@ -13,7 +13,7 @@ import type { Duplex } from 'stream';
 import crypto from 'crypto';
 import { validateApiKey } from './auth.js';
 import { AgentSessionManager, SessionBusyError } from './agent-session-manager.js';
-import type { SDKMessage } from '@letta-ai/letta-code-sdk';
+import type { SDKMessage, SendMessage, MessageContentItem } from '@letta-ai/letta-code-sdk';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('WsGateway');
@@ -161,6 +161,25 @@ export class WsGateway {
     return this.sessions.abortByAgentId(agentId);
   }
 
+  /** List all agent IDs tracked in the gateway conversation store */
+  listTrackedAgentIds(): string[] {
+    return this.sessions.listTrackedAgentIds();
+  }
+
+  /** Remove orphaned agents from the gateway conversation store */
+  removeOrphanedAgents(agentIds: string[]): string[] {
+    return this.sessions.removeOrphanedAgents(agentIds);
+  }
+
+  /** Broadcast a system event to all connected WS clients */
+  broadcastSystemEvent(event: { type: string; [key: string]: unknown }): void {
+    for (const ws of this.wss.clients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        this.send(ws, event);
+      }
+    }
+  }
+
   // --- connection handling ---
 
   private onConnection(ws: WebSocket): void {
@@ -248,6 +267,38 @@ export class WsGateway {
     }
   }
 
+  /**
+   * Try to parse a JSON string as a multimodal MessageContentItem[].
+   * Returns the parsed array if valid, otherwise null (treat as plain text).
+   *
+   * A valid multimodal message is a JSON array where every element has
+   * a `type` field that is either "text" or "image".
+   */
+  private parseMultimodalContent(content: string): MessageContentItem[] | null {
+    // Quick checks to avoid JSON.parse overhead on plain text messages
+    const trimmed = content.trimStart();
+    if (!trimmed.startsWith('[')) return null;
+
+    try {
+      const parsed = JSON.parse(content);
+      if (!Array.isArray(parsed) || parsed.length === 0) return null;
+
+      // Validate: every element must have a recognized type
+      const isValid = parsed.every(
+        (item: unknown) =>
+          typeof item === 'object' && item !== null &&
+          'type' in item &&
+          ((item as { type: string }).type === 'text' || (item as { type: string }).type === 'image')
+      );
+      if (!isValid) return null;
+
+      log.info(`Parsed multimodal content: ${parsed.length} part(s) (${parsed.filter((i: { type: string }) => i.type === 'image').length} image(s))`);
+      return parsed as MessageContentItem[];
+    } catch {
+      return null;
+    }
+  }
+
   private async handleClientMessage(ws: WebSocket, connId: string, msg: ClientMessage): Promise<void> {
     if (!this.sessions.has(connId)) {
       this.sendError(ws, ErrorCode.NO_SESSION, 'Send session_start first', msg.request_id);
@@ -262,6 +313,11 @@ export class WsGateway {
     if (msg.source?.channel && msg.source?.chatId && this.onSourceUpdate) {
       this.onSourceUpdate(msg.source);
     }
+
+    // Detect multimodal content: the Matrix bridge JSON-serializes
+    // MessageContentItem[] arrays as the content string.  Parse them
+    // back so the SDK receives proper inline images.
+    const messageToSend: SendMessage = this.parseMultimodalContent(msg.content) ?? msg.content;
 
     try {
       // --- Tool call accumulation ---
@@ -325,7 +381,7 @@ export class WsGateway {
         bufferedEvents.length = 0;
       };
 
-      for await (const event of this.sessions.sendAndStream(connId, msg.content)) {
+      for await (const event of this.sessions.sendAndStream(connId, messageToSend)) {
         // --- Tool call accumulation ---
         if (event.type === 'tool_call') {
           const tc = event as import('@letta-ai/letta-code-sdk').SDKToolCallMessage;

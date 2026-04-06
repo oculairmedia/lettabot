@@ -10,7 +10,7 @@
  * conversation_id in session_start.
  */
 
-import { createSession, resumeSession, type Session, type SDKMessage, type SDKInitMessage } from '@letta-ai/letta-code-sdk';
+import { createSession, resumeSession, type Session, type SDKMessage, type SDKInitMessage, type SendMessage, type MessageContentItem } from '@letta-ai/letta-code-sdk';
 import type { CreateSessionOptions } from '@letta-ai/letta-code-sdk';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -137,6 +137,24 @@ class ConversationStore {
       this.save();
     }
   }
+
+  /** List all tracked agent IDs (for cleanup/archival) */
+  listAgentIds(): string[] {
+    return Object.keys(this.data.agents);
+  }
+
+  /** Remove agent entries for deleted agents. Returns removed agent IDs. */
+  removeAgents(agentIds: string[]): string[] {
+    const removed: string[] = [];
+    for (const id of agentIds) {
+      if (this.data.agents[id]) {
+        delete this.data.agents[id];
+        removed.push(id);
+      }
+    }
+    if (removed.length > 0) this.save();
+    return removed;
+  }
 }
 
 /**
@@ -259,7 +277,7 @@ export class AgentSessionManager {
    */
   async *sendAndStream(
     connectionId: string,
-    message: string,
+    message: SendMessage,
   ): AsyncGenerator<SDKMessage> {
     const managed = this.sessions.get(connectionId);
     if (!managed) throw new Error('No session for connection');
@@ -288,7 +306,7 @@ export class AgentSessionManager {
    private async *_doSendAndStream(
     managed: ManagedSession,
     connectionId: string,
-    message: string,
+    message: SendMessage,
     isRetry = false,
   ): AsyncGenerator<SDKMessage> {
     // Clear the aborted flag at the start of each new send
@@ -297,13 +315,17 @@ export class AgentSessionManager {
       // Pre-send: populate graphiti context + agent discovery blocks BEFORE the
       // agent sees the message.  This is the gateway path — channel-based messages
       // go through bot.ts which has its own presend hook.
-      if (message.length > 0 && managed.agentId && !isRetry) {
+      // Extract text from message for presend context (works for both string and multimodal)
+      const presendText = typeof message === 'string' ? message : (
+        ((message as MessageContentItem[]).find(item => item.type === 'text') as { text: string } | undefined)?.text ?? ''
+      );
+      if (presendText.length > 0 && managed.agentId && !isRetry) {
         const presendUrl = process.env.PRESEND_URL || 'http://192.168.50.90:5005/presend/context';
         try {
           const resp = await fetch(presendUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agent_id: managed.agentId, prompt: message }),
+            body: JSON.stringify({ agent_id: managed.agentId, prompt: presendText }),
             signal: AbortSignal.timeout(8000),
           });
           if (resp.ok) {
@@ -522,6 +544,16 @@ export class AgentSessionManager {
   /** Number of active sessions */
   get size(): number {
     return this.sessions.size;
+  }
+
+  /** List all agent IDs tracked in the conversation store */
+  listTrackedAgentIds(): string[] {
+    return this.conversationStore.listAgentIds();
+  }
+
+  /** Remove agent entries from the conversation store. Returns removed IDs. */
+  removeOrphanedAgents(agentIds: string[]): string[] {
+    return this.conversationStore.removeAgents(agentIds);
   }
 
   /** Close all sessions and stop the sweep timer */

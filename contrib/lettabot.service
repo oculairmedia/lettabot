@@ -1,0 +1,40 @@
+[Unit]
+Description=LettaBot - Multi-channel AI Agent
+Documentation=https://github.com/letta-ai/lettabot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust these paths to match your deployment
+WorkingDirectory=/opt/stacks/lettabot
+ExecStart=/usr/bin/node dist/main.js
+Restart=on-failure
+RestartSec=10
+# Allow graceful shutdown (30s before SIGKILL)
+TimeoutStopSec=30
+
+# Environment
+Environment=NODE_ENV=production
+# Load env vars from file (create from .env.example)
+EnvironmentFile=-/opt/stacks/lettabot/.env
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+# Allow writes to working directory and data
+ReadWritePaths=/opt/stacks/lettabot/data /opt/stacks/lettabot/.store
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=2G
+
+# Logging (journalctl -u lettabot)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lettabot
+
+[Install]
+WantedBy=multi-user.target
