@@ -47,7 +47,7 @@
     },
     "agent-2fae4a23-1caa-460d-9033-9f30ac84ed5e": {
       "conversationId": "conv-6083fa67-f622-4f26-9191-10055d46f816",
-      "updatedAt": "2026-04-04T23:04:32.804Z"
+      "updatedAt": "2026-04-08T02:29:43.149Z"
     },
     "agent-9ac53109-5a15-4217-b527-faa89c46e52d": {
       "conversationId": "conv-ea58c3e5-9b4b-468b-b0dd-473ece102d58",
@@ -61,21 +61,22 @@
       "conversationId": "conv-9101a06c-e67a-4ff0-97d7-93f885304cf3",
       "updatedAt": "2026-04-01T22:18:23.962Z"
     },
-    "agent-597b5756-2915-4560-ba6b-91005f085166": {
-      "conversationId": "conv-11108567-4eba-4467-a89b-7d86f1af97ea",
-      "updatedAt": "2026-04-05T15:40:23.630Z"
-    },
     "agent-b19ab6d5-460b-48f7-b300-738021d9a882": {
       "conversationId": "conv-a4153eab-2df2-4b68-8409-bac99e2e8b5a",
       "updatedAt": "2026-04-05T05:22:11.981Z"
     },
     "agent-80ac3bb8-1087-412d-a19c-7c8c6aeb5916": {
       "conversationId": "conv-dfa4f4a2-2383-4ffb-91f6-61ccf65c32b8",
-      "updatedAt": "2026-04-05T05:41:18.605Z"
+      "updatedAt": "2026-04-06T22:57:03.131Z"
     },
     "agent-13eb4426-b06f-4d35-ae5a-5d6ca80409f5": {
       "conversationId": "conv-036ab11e-dc3c-4ff8-9cc1-3b472bd410a1",
-      "updatedAt": "2026-04-05T15:48:07.563Z"
+      "updatedAt": "2026-04-06T05:28:01.034Z",
+      "recentlyAborted": true
+    },
+    "agent-597b5756-2915-4560-ba6b-91005f085166": {
+      "conversationId": "conv-b3bc6d62-7379-4b89-9de1-34e2bb975e59",
+      "updatedAt": "2026-04-08T02:35:31.413Z"
     }
   }
 }
