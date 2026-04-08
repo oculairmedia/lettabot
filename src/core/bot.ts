@@ -33,6 +33,7 @@ import { resolveEmoji } from './emoji.js';
 import { SessionManager } from './session-manager.js';
 import { createDisplayPipeline, type DisplayEvent, type CompleteEvent, type ErrorEvent } from './display-pipeline.js';
 import { TurnLogger, TurnAccumulator, generateTurnId, type TurnRecord } from './turn-logger.js';
+import { maybeGenerateConversationTitle } from '../services/conversation-title.js';
 
 
 import { createLogger, type Logger } from '../logger.js';
@@ -2176,6 +2177,12 @@ export class LettaBot implements AgentSession {
       }
 
       lap('message delivered');
+
+      if (sentAnyMessage && session?.conversationId && msg.text && response.trim()) {
+        maybeGenerateConversationTitle(session.conversationId, msg.text, response.trim())
+          .catch(err => this.log.warn('Conversation title generation failed:', err instanceof Error ? err.message : err));
+      }
+
       await this.deliverNoVisibleResponseIfNeeded(msg, adapter, sentAnyMessage, receivedAnyData, msgTypeCounts);
       
     } catch (error) {

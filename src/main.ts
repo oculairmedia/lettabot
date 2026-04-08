@@ -649,6 +649,19 @@ async function main() {
   
   // Start all agents
   await gateway.start();
+
+  // Backfill conversation titles for agents missing them (fire-and-forget)
+  import('./services/conversation-title.js').then(({ backfillConversationTitles }) => {
+    for (const agentConfig of agents) {
+      const store = agentStores.get(agentConfig.name);
+      const agentId = store?.getInfo()?.agentId;
+      if (agentId) {
+        backfillConversationTitles(agentId).catch(err =>
+          log.warn(`Conversation title backfill failed for ${agentConfig.name}:`, err)
+        );
+      }
+    }
+  }).catch(() => {});
   
   // Periodic tool-approval re-verification (every 30 minutes)
   // Tools can be re-attached with approvals via API; this ensures headless mode stays clean.

@@ -15,6 +15,7 @@ import { validateApiKey } from './auth.js';
 import { AgentSessionManager, SessionBusyError } from './agent-session-manager.js';
 import type { SDKMessage, SendMessage, MessageContentItem } from '@letta-ai/letta-code-sdk';
 import { createLogger } from '../logger.js';
+import { maybeGenerateConversationTitle } from '../services/conversation-title.js';
 
 const log = createLogger('WsGateway');
 
@@ -372,6 +373,7 @@ export class WsGateway {
       // Tokens arrive one-by-one, so we accumulate and only forward once
       // we're sure it's not a no-reply suppression. (mirrors bot.ts mayBeHidden logic)
       let assistantBuffer = '';
+      let streamConversationId: string | null = null;
       const bufferedEvents: Array<{ content: string; uuid?: string }> = [];
 
       const flushAssistantBuffer = () => {
@@ -431,6 +433,10 @@ export class WsGateway {
           if (bufferedEvents.length > 0) {
             flushAssistantBuffer();
           }
+          // Capture conversation ID from result event for title generation
+          if (event.type === 'result' && (event as { conversationId?: string }).conversationId) {
+            streamConversationId = (event as { conversationId?: string }).conversationId!;
+          }
           this.forwardStreamEvent(ws, connId, event, msg.request_id, toolNameMap);
         }
       }
@@ -447,6 +453,13 @@ export class WsGateway {
       } else if (bufferedEvents.length > 0) {
         // Partial match that never completed (e.g. "<no-r" then stream ended) — flush it
         flushAssistantBuffer();
+      }
+
+      // Fire-and-forget: generate conversation title from first exchange
+      const userText = typeof messageToSend === 'string' ? messageToSend : msg.content;
+      if (streamConversationId && userText && assistantBuffer.trim() && assistantBuffer.trim() !== '<no-reply/>') {
+        maybeGenerateConversationTitle(streamConversationId, userText, assistantBuffer.trim())
+          .catch(err => log.warn('Conversation title generation failed:', err instanceof Error ? err.message : err));
       }
     } catch (err) {
       if (err instanceof SessionBusyError) {
