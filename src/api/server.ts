@@ -230,6 +230,30 @@ export function createApiServer(deliverer: AgentRouter, options: ServerOptions):
       return;
     }
 
+    // Route: GET /healthz - Structured health check for monitoring (no auth required)
+    if (req.url === '/healthz' && req.method === 'GET') {
+      const agents: Record<string, { agentId: string | null; channels: string[]; conversationMode: string }> = {};
+      if (options.stores) {
+        for (const [name, store] of options.stores) {
+          const info = store.getInfo();
+          agents[name] = {
+            agentId: info.agentId ?? null,
+            channels: options.agentChannels?.get(name) ?? [],
+            conversationMode: options.agentConversationModes?.get(name) ?? 'shared',
+          };
+        }
+      }
+      const health = {
+        status: 'ok',
+        uptime: Math.round(process.uptime()),
+        agents,
+        memoryUsageMB: Math.round(process.memoryUsage.rss() / 1024 / 1024),
+      };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(health));
+      return;
+    }
+
     // Turn viewer routes
     if (options.turnLogFiles && req.method === 'GET') {
       const agentNames = Object.keys(options.turnLogFiles);

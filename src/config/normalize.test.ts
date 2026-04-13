@@ -37,6 +37,7 @@ describe('normalizeAgents', () => {
     'HEARTBEAT_SKIP_RECENT_POLICY', 'HEARTBEAT_SKIP_RECENT_FRACTION', 'HEARTBEAT_INTERRUPT_ON_USER_MESSAGE',
     'SLEEPTIME_TRIGGER', 'SLEEPTIME_BEHAVIOR', 'SLEEPTIME_STEP_COUNT',
     'CRON_ENABLED',
+    'LETTA_AGENT_NAME', 'AGENT_NAME',
   ];
   const savedEnv: Record<string, string | undefined> = {};
 

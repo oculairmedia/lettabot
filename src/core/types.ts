@@ -228,6 +228,7 @@ export interface BotConfig {
   conversationOverrides?: string[]; // Channels that always use their own conversation (shared mode)
   maxSessions?: number; // Max concurrent sessions in per-chat mode (default: 10, LRU eviction)
   reuseSession?: boolean; // Reuse SDK subprocess across messages (default: true). Set false to eliminate stream state bleed at cost of ~5s latency per message.
+  lockTimeoutMs?: number; // Max time to wait for acquireLock before force-acquiring (default: 600000 = 10 min). Prevents deadlock from leaked locks.
   onGatewayAbort?: (agentId: string) => Promise<number>;
 }
 

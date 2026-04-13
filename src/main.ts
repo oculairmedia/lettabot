@@ -787,20 +787,38 @@ async function main() {
     printStartupBanner(bannerAgents);
   }
   
-  // Shutdown
-  const shutdown = async () => {
-    log.info('Shutting down...');
+  // Shutdown — clean up all services and sessions to prevent leaked subprocesses
+  let shuttingDown = false;
+  const shutdown = async (signal?: string) => {
+    if (shuttingDown) return; // Prevent double-shutdown from SIGINT + SIGTERM
+    shuttingDown = true;
+    log.info(`Shutting down${signal ? ` (${signal})` : ''}...`);
     services.groupBatchers.forEach(b => b.stop());
     services.heartbeatServices.forEach(h => h.stop());
     services.cronServices.forEach(c => c.stop());
     services.pollingServices.forEach(p => p.stop());
+    // Invalidate all sessions to close CLI subprocesses cleanly
+    for (const invalidator of sessionInvalidators.values()) {
+      try { invalidator(); } catch {}
+    }
     await gateway.stop();
     apiServer.close();
     process.exit(0);
   };
 
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  // Catch unhandled rejections to prevent silent crashes
+  process.on('unhandledRejection', (reason: unknown) => {
+    log.error('Unhandled promise rejection:', reason instanceof Error ? reason.stack || reason.message : reason);
+  });
+
+  // Catch uncaught exceptions — log and exit cleanly
+  process.on('uncaughtException', (err: Error) => {
+    log.error('Uncaught exception:', err.stack || err.message);
+    shutdown('uncaughtException').catch(() => process.exit(1));
+  });
 }
 
 main().catch((e) => {

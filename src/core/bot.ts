@@ -2221,13 +2221,29 @@ export class LettaBot implements AgentSession {
    * sends on the same Session object, which the SDK does not support.
    */
   private async acquireLock(convKey: string): Promise<boolean> {
+    // Timeout prevents infinite deadlock if a key's processing flag is never cleared
+    // (e.g., an unhandled error in processMessage or a subprocess hang).
+    const maxWaitMs = this.config.lockTimeoutMs ?? 10 * 60 * 1000; // 10 minutes default
+    const deadline = Date.now() + maxWaitMs;
+
     if (convKey !== 'shared') {
       while (this.processingKeys.has(convKey)) {
+        if (Date.now() > deadline) {
+          this.log.error(`acquireLock timed out after ${maxWaitMs}ms (key=${convKey}) — forcing lock acquisition`);
+          // Force-acquire: the previous holder likely leaked. Clean up stale state.
+          this.processingKeys.delete(convKey);
+          break;
+        }
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       this.processingKeys.add(convKey);
     } else {
       while (this.processing) {
+        if (Date.now() > deadline) {
+          this.log.error(`acquireLock timed out after ${maxWaitMs}ms (shared) — forcing lock acquisition`);
+          this.processing = false;
+          break;
+        }
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       this.processing = true;
