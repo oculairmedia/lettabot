@@ -701,7 +701,9 @@ async function main() {
   const gatewayEnabled = process.env.GATEWAY_ENABLED === 'true';
   if (gatewayEnabled) {
     const { WsGateway } = await import('./api/ws-gateway.js');
-    const validChannels = new Set(['telegram', 'slack', 'discord', 'whatsapp', 'signal', 'matrix']);
+    const validChannels = new Set<import('./core/types.js').ChannelId>(['telegram', 'slack', 'discord', 'whatsapp', 'signal', 'matrix', 'letta-mobile']);
+    const isValidChannel = (channel: string): channel is import('./core/types.js').ChannelId =>
+      (validChannels as Set<string>).has(channel);
     const primaryAgentName = agents[0]?.name || 'LettaBot';
     const primaryStore = agentStores.get(primaryAgentName);
     const { AgentSessionManager } = await import('./api/agent-session-manager.js');
@@ -727,9 +729,9 @@ async function main() {
         onConversationUpdate: gatewayConversationUpdate,
       }),
       onSourceUpdate: (source) => {
-        if (!primaryStore || !validChannels.has(source.channel)) return;
+        if (!primaryStore || !isValidChannel(source.channel)) return;
         primaryStore.lastMessageTarget = {
-          channel: source.channel as import('./core/types.js').ChannelId,
+          channel: source.channel,
           chatId: source.chatId,
           updatedAt: new Date().toISOString(),
         };
