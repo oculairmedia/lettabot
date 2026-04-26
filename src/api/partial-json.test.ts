@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parsePartialJsonObject } from './partial-json';
+import { parsePartialJsonObject } from './partial-json.js';
 
 describe('parsePartialJsonObject', () => {
   describe('design doc §2 spec table — supported partial states', () => {

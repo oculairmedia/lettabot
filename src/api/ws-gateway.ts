@@ -21,6 +21,7 @@ import {
   DEFAULT_COALESCE_WINDOW_MS,
   type StreamFrame,
 } from './bot-stream-coalescer.js';
+import { PartialJsonSnapshotEmitter } from './partial-json-snapshot-emitter.js';
 
 const log = createLogger('WsGateway');
 
@@ -114,6 +115,29 @@ function readCoalesceConfig(): { enabled: boolean; windowMs: number } {
   return { enabled, windowMs };
 }
 
+/**
+ * Resolve the partial-JSON tool_call config from env. **Disabled by
+ * default** for the first rollout cycle (lettabot-uww). Flip via
+ * `LETTABOT_PARTIAL_JSON_ENABLED=1` (or `=true`) to opt in. When
+ * enabled, the gateway emits a fresh `tool_call` snapshot on every
+ * structurally-distinct parse-extension during streaming, with
+ * `status='running'` while the args are still arriving and
+ * `status='completed'` on the final emit. The BotStreamCoalescer's
+ * replace-by-id rule absorbs the per-byte snapshot noise.
+ *
+ * When disabled the gateway uses the bespoke accumulator that emits
+ * a single tool_call frame per call, after the full args buffer has
+ * been received (legacy behavior, matches mobile/desktop today).
+ *
+ * Knobs:
+ *   - LETTABOT_PARTIAL_JSON_ENABLED: '1' | 'true' to enable (default: off)
+ */
+function readPartialJsonConfig(): { enabled: boolean } {
+  const raw = process.env.LETTABOT_PARTIAL_JSON_ENABLED;
+  const enabled = raw === '1' || raw === 'true';
+  return { enabled };
+}
+
 export class WsGateway {
   private wss: WebSocketServer;
   private sessions: AgentSessionManager;
@@ -126,6 +150,7 @@ export class WsGateway {
   private readonly maxConnections: number;
   private readonly onSourceUpdate?: (source: { channel: string; chatId: string }) => void;
   private readonly coalesceConfig: { enabled: boolean; windowMs: number };
+  private readonly partialJsonConfig: { enabled: boolean };
 
   constructor(options: WsGatewayOptions) {
     this.apiKey = options.apiKey;
@@ -136,6 +161,7 @@ export class WsGateway {
     });
     this.onSourceUpdate = options.onSourceUpdate;
     this.coalesceConfig = readCoalesceConfig();
+    this.partialJsonConfig = readPartialJsonConfig();
 
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
     this.wss.on('connection', (ws) => this.onConnection(ws));
@@ -148,7 +174,10 @@ export class WsGateway {
       `WebSocket gateway ready on ${this.path}` +
         (this.coalesceConfig.enabled
           ? ` (stream coalescer ON, window=${this.coalesceConfig.windowMs}ms)`
-          : ' (stream coalescer OFF)'),
+          : ' (stream coalescer OFF)') +
+        (this.partialJsonConfig.enabled
+          ? ' (partial-JSON tool_call ON)'
+          : ' (partial-JSON tool_call OFF)'),
     );
   }
 
@@ -401,6 +430,41 @@ export class WsGateway {
       // (SDK tool_result only carries toolCallId, not toolName)
       const toolNameMap = new Map<string, string>();
 
+      // --- Partial-JSON tool_call snapshot tracking (lettabot-uww) ---
+      // When `partialJsonConfig.enabled` is true, we emit a fresh tool_call
+      // snapshot on every structurally-distinct parse-extension during
+      // streaming (status='running'), then a final snapshot on type
+      // boundary (status='completed'). The emitter encapsulates the
+      // per-id buffer + parser + dedupe; see partial-json-snapshot-emitter.ts.
+      const partialJsonEnabled = this.partialJsonConfig.enabled;
+      const snapshotEmitter = partialJsonEnabled
+        ? new PartialJsonSnapshotEmitter({
+            onSnapshot: (emission) => {
+              const pending = pendingToolCalls.get(emission.id);
+              if (!pending) return; // race: cleared mid-flight
+              const enriched = buildToolCallMessage(
+                pending.msg,
+                emission.value,
+                emission.rawArgs,
+              );
+              const tcName = (enriched as { toolName?: string }).toolName;
+              const tcId = (enriched as { toolCallId?: string }).toolCallId;
+              if (tcName && tcId) {
+                toolNameMap.set(tcId, tcName);
+              }
+              this.forwardStreamEvent(
+                ws,
+                connId,
+                enriched,
+                msg.request_id,
+                toolNameMap,
+                emission.status,
+              );
+            },
+            logWarning: (m) => log.warn(m),
+          })
+        : null;
+
       /** Merge tool argument strings, handling both delta and cumulative chunking. */
       const mergeToolArgs = (existing: string, incoming: string): string => {
         if (!incoming) return existing;
@@ -413,24 +477,54 @@ export class WsGateway {
         return `${existing}${incoming}`;
       };
 
+      /**
+       * Build a tool_call SDK message envelope with the given parsed args.
+       * If parser produced an empty object but we have raw text, fall
+       * back to the raw-wrapped value so the client can at least render
+       * something (matches legacy behavior on JSON.parse failure).
+       */
+      const buildToolCallMessage = (
+        base: SDKMessage,
+        parsedArgs: Record<string, unknown>,
+        rawFallback: string,
+      ): SDKMessage => {
+        const toolInput =
+          Object.keys(parsedArgs).length === 0 && rawFallback
+            ? { raw: rawFallback }
+            : parsedArgs;
+        return { ...base, toolInput } as SDKMessage;
+      };
+
       /** Flush buffered tool calls with fully accumulated arguments. */
       const flushPendingToolCalls = () => {
-        for (const [, pending] of pendingToolCalls) {
-          let toolInput: Record<string, unknown> = {};
-          if (pending.accumulatedArgs) {
-            try { toolInput = JSON.parse(pending.accumulatedArgs); }
-            catch { toolInput = { raw: pending.accumulatedArgs }; }
-          } else {
-            // No rawArguments — use the original toolInput from the first chunk
-            toolInput = (pending.msg as any).toolInput ?? {};
+        if (partialJsonEnabled && snapshotEmitter) {
+          // Partial-JSON path: emit terminal `completed` snapshot per id
+          // via the emitter. The coalescer's replace-by-id rule causes
+          // this terminal frame to overwrite any in-flight running
+          // snapshot on the wire.
+          for (const id of pendingToolCalls.keys()) {
+            snapshotEmitter.finalize(id);
           }
-          const enriched = { ...pending.msg, toolInput } as SDKMessage;
-          const tcName = (enriched as any).toolName as string | undefined;
-          const tcId = (enriched as any).toolCallId as string | undefined;
-          if (tcName && tcId) {
-            toolNameMap.set(tcId, tcName);
+          snapshotEmitter.clear();
+        } else {
+          // --- Legacy path (flag off): emit one frame per call. ---
+          for (const [, pending] of pendingToolCalls) {
+            let toolInput: Record<string, unknown> = {};
+            if (pending.accumulatedArgs) {
+              try { toolInput = JSON.parse(pending.accumulatedArgs); }
+              catch { toolInput = { raw: pending.accumulatedArgs }; }
+            } else {
+              // No rawArguments — use the original toolInput from the first chunk
+              toolInput = ((pending.msg as { toolInput?: Record<string, unknown> }).toolInput) ?? {};
+            }
+            const enriched = { ...pending.msg, toolInput } as SDKMessage;
+            const tcName = (enriched as { toolName?: string }).toolName;
+            const tcId = (enriched as { toolCallId?: string }).toolCallId;
+            if (tcName && tcId) {
+              toolNameMap.set(tcId, tcName);
+            }
+            this.forwardStreamEvent(ws, connId, enriched, msg.request_id, toolNameMap);
           }
-          this.forwardStreamEvent(ws, connId, enriched, msg.request_id, toolNameMap);
         }
         pendingToolCalls.clear();
         lastPendingToolCallId = null;
@@ -472,7 +566,17 @@ export class WsGateway {
             pendingToolCalls.set(id, { msg: event, accumulatedArgs: incoming });
           }
           lastPendingToolCallId = id;
-          continue; // buffer, don't forward yet
+
+          // Partial-JSON path: feed the fragment into the snapshot
+          // emitter. The emitter parses+dedupes+emits internally; the
+          // BotStreamCoalescer (when on) collapses these per-id by
+          // replace-by-id, so we can emit liberally without flooding
+          // the wire.
+          if (partialJsonEnabled && snapshotEmitter) {
+            snapshotEmitter.appendArgs(id, incoming);
+          }
+          continue; // buffer, don't forward yet (legacy) — or already
+                    // emitted as a snapshot above (partial-JSON path)
         }
 
         // Flush pending tool calls on semantic type boundary
@@ -548,7 +652,15 @@ export class WsGateway {
 
   // --- outbound helpers ---
 
-  private forwardStreamEvent(ws: WebSocket, connId: string, msg: SDKMessage, requestId?: string, toolNameMap?: Map<string, string>): void {
+  private forwardStreamEvent(
+    ws: WebSocket,
+    connId: string,
+    msg: SDKMessage,
+    requestId?: string,
+    toolNameMap?: Map<string, string>,
+    /** Partial-JSON tool_call status. Wire-additive; undefined for legacy single-emit path. */
+    toolCallStatus?: 'running' | 'completed',
+  ): void {
     switch (msg.type) {
       case 'assistant':
         if (this.isInternalMessage(msg.content)) break;
@@ -556,8 +668,18 @@ export class WsGateway {
         break;
       case 'tool_call': {
         // Include toolInput so clients can display tool call details
-        const toolInput = (msg as any).toolInput ?? {};
-        this.sendStream(ws, { type: 'stream', event: 'tool_call', tool_name: msg.toolName, tool_call_id: msg.toolCallId, tool_input: toolInput, uuid: msg.uuid, request_id: requestId });
+        const toolInput = (msg as { toolInput?: Record<string, unknown> }).toolInput ?? {};
+        const frame: ServerEvent = {
+          type: 'stream',
+          event: 'tool_call',
+          tool_name: msg.toolName,
+          tool_call_id: msg.toolCallId,
+          tool_input: toolInput,
+          uuid: msg.uuid,
+          request_id: requestId,
+        };
+        if (toolCallStatus) frame.status = toolCallStatus;
+        this.sendStream(ws, frame);
         break;
       }
       case 'tool_result': {
