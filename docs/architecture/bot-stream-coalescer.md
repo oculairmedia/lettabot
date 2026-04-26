@@ -193,6 +193,28 @@ Net change: probably -30 LOC of bespoke logic + 200 LOC of generalized coalescer
 3. If clean, default-on in next lettabot release. Keep the kill switch for two releases.
 4. Two releases later: delete the kill switch + bespoke tool accumulator.
 
+### Compat callout — letta-mobile wucn heuristic (discovered during aie.5 audit)
+
+`AdminChatViewModel.kt` line ~1404 has a `wucn-snapshot-recovery`
+heuristic that interprets any incoming assistant delta of length ≥32
+that fails the strict prefix check as a "snapshot rewrite" and
+*replaces* the existing bubble content with the longer of the two
+strings.
+
+The original justification was server-side normalization on the
+*timeline-sync* path (whitespace/quote rewrites). It does not apply to
+the WS streaming path, but the same code path serves both.
+
+With coalescing enabled this heuristic actively breaks: a coalescer
+flush that batches ~20 token deltas into a single ~140-char delta
+fails the prefix check (it's neither a prefix-of nor a prefix-from
+existing content) and trips the heuristic, causing every batch after
+the first to be silently dropped or to overwrite the bubble.
+
+**Mitigation:** mobile-side fix in lettabot-aie.5b (new bead) to scope
+the wucn heuristic to the timeline-sync path only, before flipping the
+flag default-on in aie.6.
+
 ---
 
 ## Open questions
