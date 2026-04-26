@@ -1050,34 +1050,34 @@ outbound stream frames before sending, which dramatically reduces
 frame count on chatty turns (12–22× reduction measured on
 representative fixtures, see `docs/architecture/bot-stream-coalescer.md`).
 
-Coalescing is **disabled by default** as of this release. Enable it
-explicitly to opt in.
+Coalescing is **enabled by default** as of this release. Set
+`LETTABOT_COALESCE_ENABLED=0` (or `=false`) to disable it as a kill
+switch if a regression is observed.
 
 | Env Variable | Type | Default | Description |
 |--------------|------|---------|-------------|
-| `LETTABOT_COALESCE_ENABLED` | `0` \| `1` \| `false` \| `true` | `false` | When true, every WS connection gets a per-connection `BotStreamCoalescer` that batches consecutive `assistant` and `reasoning` text deltas into single frames, replaces `tool_call` snapshots by `tool_call_id` (latest snapshot wins), and passes `tool_result` through (flushing any pending text/tool_call in order first). |
+| `LETTABOT_COALESCE_ENABLED` | `0` \| `1` \| `false` \| `true` | `true` (on) | When enabled, every WS connection gets a per-connection `BotStreamCoalescer` that batches consecutive `assistant` and `reasoning` text deltas into single frames, replaces `tool_call` snapshots by `tool_call_id` (latest snapshot wins), and passes `tool_result` through (flushing any pending text/tool_call in order first). Set to `0` or `false` to revert to per-token frame emission. |
 | `LETTABOT_COALESCE_WINDOW_MS` | positive integer | `200` | Max time text deltas may be buffered before forced flush. The window resets every time a frame for the same `request_id` arrives. Lower values = lower perceived latency, smaller batches. Higher values = larger batches, more savings, slightly higher latency on sparse streams. |
 
-**Compatibility callout (mobile clients):**
+**Mobile compatibility:**
 
-letta-mobile clients prior to the wucn-snapshot-recovery scoping fix
-(see `lettabot-aie.7`) can mishandle coalesced batches as snapshot
-rewrites and lose text. **Do not enable `LETTABOT_COALESCE_ENABLED`
-in production** until your mobile clients ship the fix. The flag is
-safe to use against:
-- The Matrix bridge
-- Discord, Telegram, Signal, Slack, WhatsApp channels
-- The OpenAI-compat HTTP endpoint
-- Server-side tools/webhooks consuming the WS gateway
+letta-mobile carries the WS-path scope fix from `lettabot-aie.7`
+(commit `a7d7974` on the mobile repo, branch
+`fix/wucn-scope-to-timeline-sync`). Pre-fix mobile builds can
+mishandle coalesced batches as snapshot rewrites and lose text — if
+you operate against an older mobile build, set
+`LETTABOT_COALESCE_ENABLED=0` until the build is updated.
+
+All other channels (Matrix, Discord, Telegram, Signal, Slack,
+WhatsApp, OpenAI-compat HTTP, server-side tools/webhooks consuming
+the WS gateway) are unaffected by the mobile concern.
 
 **Kill-switch retention:**
 
-The flag is intended to remain in tree for **two release cycles** after
-the default flips on (planned in a follow-up release once
-`lettabot-aie.7` ships). After that the kill-switch will be removed
-along with the bespoke per-frame send path, leaving coalescing as the
-only behaviour. Tracked in the follow-up bead linked from
-`lettabot-aie.6`.
+The kill switch remains in tree for **two release cycles** following
+this default-on flip. After that, the env var handling and the
+non-coalesced fallback send path are removed in `lettabot-qs5`,
+leaving coalescing as the only behaviour.
 
 ### OpenAI-Compatible Endpoint
 

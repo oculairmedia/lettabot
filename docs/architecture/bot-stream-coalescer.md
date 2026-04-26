@@ -193,27 +193,33 @@ Net change: probably -30 LOC of bespoke logic + 200 LOC of generalized coalescer
 3. If clean, default-on in next lettabot release. Keep the kill switch for two releases.
 4. Two releases later: delete the kill switch + bespoke tool accumulator.
 
-### Compat callout — letta-mobile wucn heuristic (discovered during aie.5 audit)
+### Compat callout — letta-mobile wucn heuristic (resolved)
 
-`AdminChatViewModel.kt` line ~1404 has a `wucn-snapshot-recovery`
-heuristic that interprets any incoming assistant delta of length ≥32
-that fails the strict prefix check as a "snapshot rewrite" and
-*replaces* the existing bubble content with the longer of the two
-strings.
+During the aie.5 audit, `AdminChatViewModel.kt` was found to invoke a
+`wucn-snapshot-recovery` heuristic on the WS streaming path that
+interpreted any incoming assistant delta of length ≥32 chars failing
+the strict prefix check as a "snapshot rewrite" and *replaced* the
+bubble content with the longer of the two strings.
 
 The original justification was server-side normalization on the
-*timeline-sync* path (whitespace/quote rewrites). It does not apply to
-the WS streaming path, but the same code path serves both.
+*timeline-sync* path (whitespace/quote rewrites). The heuristic was
+mistakenly applied to the WS streaming path too, where the lettabot
+gateway never emits normalized snapshots.
 
-With coalescing enabled this heuristic actively breaks: a coalescer
-flush that batches ~20 token deltas into a single ~140-char delta
-fails the prefix check (it's neither a prefix-of nor a prefix-from
-existing content) and trips the heuristic, causing every batch after
-the first to be silently dropped or to overwrite the bubble.
+With coalescing enabled this heuristic actively broke: every flushed
+batch (~140 chars) tripped the heuristic and clobbered the bubble.
 
-**Mitigation:** mobile-side fix in lettabot-aie.5b (new bead) to scope
-the wucn heuristic to the timeline-sync path only, before flipping the
-flag default-on in aie.6.
+**Resolution (lettabot-aie.7, shipped):** the mobile-side fix scoped
+the wucn heuristic to `TimelineSyncLoop` only and dropped it from the
+WS-streaming path. The strict prefix-check + concatenation default
+correctly handles both per-token deltas and coalesced batched deltas.
+Two regression tests in `AdminChatViewModelTest`:
+  - `client mode WS path appends coalesced batched-delta frames without loss`
+  - `client mode WS path treats prefix-extending frame as cumulative replacement`
+
+After that landed, aie.6 flipped `LETTABOT_COALESCE_ENABLED` to
+default-on. Operators running against pre-aie.7 mobile builds should
+set `LETTABOT_COALESCE_ENABLED=0` until those builds are updated.
 
 ---
 

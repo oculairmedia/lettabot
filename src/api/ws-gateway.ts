@@ -88,16 +88,23 @@ const MAX_CONNECTIONS = 100;
 const PING_INTERVAL_MS = 30_000;
 
 /**
- * Resolve the stream coalescer config from env. Disabled by default to keep
- * the first rollout safe — flip via `LETTABOT_COALESCE_ENABLED=true`.
+ * Resolve the stream coalescer config from env. **Enabled by default** as of
+ * lettabot-aie.6 (after letta-mobile shipped the wucn-scope fix in aie.7).
+ * Set `LETTABOT_COALESCE_ENABLED=0` (or `false`) as a kill switch if a
+ * regression is observed; the kill switch is retained for two release
+ * cycles per the rollout plan in
+ * docs/architecture/bot-stream-coalescer.md §5, then removed via
+ * lettabot-qs5.
  *
  * Knobs:
- *   - LETTABOT_COALESCE_ENABLED: '1' | 'true' to enable (default: off)
+ *   - LETTABOT_COALESCE_ENABLED: '0' | 'false' to disable (default: on)
  *   - LETTABOT_COALESCE_WINDOW_MS: positive integer (default: 200)
  */
 function readCoalesceConfig(): { enabled: boolean; windowMs: number } {
   const raw = process.env.LETTABOT_COALESCE_ENABLED;
-  const enabled = raw === '1' || raw === 'true';
+  // Opt-out form: only explicit '0' or 'false' disables. Unset, '1', 'true',
+  // or any other value → enabled (default-on).
+  const enabled = raw !== '0' && raw !== 'false';
   const windowRaw = process.env.LETTABOT_COALESCE_WINDOW_MS;
   let windowMs = DEFAULT_COALESCE_WINDOW_MS;
   if (windowRaw) {
