@@ -6,6 +6,8 @@
 **Related:** `bot-stream-coalescer.md`, paseo deep dive
 **Bead epic:** `lb-pjsn` (lettabot)
 
+> **Reading this to write a channel adapter or WS client?** The user-facing wire contract — including the `status` field semantics — is in [`docs/channel-adapter-contract.md`](../channel-adapter-contract.md). This doc is internal design rationale for the server-side parser + emitter.
+
 ## Context
 
 Letta (and the underlying provider, e.g. Claude) streams tool_call arguments as **incremental JSON fragments**. Today our gateway buffers these fragments until the call is complete (or until the next semantic event arrives), then emits one `tool_call` frame with the fully-parsed args. The mobile UI sees nothing until the full call lands.

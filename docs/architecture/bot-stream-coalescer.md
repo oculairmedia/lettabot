@@ -6,6 +6,8 @@
 **Related:** [paseo deep dive](./paseo-research-notes.md), letta-mobile lv3e (closed)
 **Bead epic:** `lb-coal` (lettabot)
 
+> **Reading this to write a channel adapter or WS client?** The user-facing wire contract is in [`docs/channel-adapter-contract.md`](../channel-adapter-contract.md). This doc is internal design rationale for the server-side coalescer.
+
 ## Context
 
 After closing letta-mobile-lv3e we audited the lettabot ↔ letta-mobile WS streaming pipeline against `getpaseo/paseo`'s daemon. Paseo solves the *same* problem we have (multi-provider streaming → mobile client) and ships a small server-side primitive — `AgentStreamCoalescer` — that we don't have. It produces fewer, larger frames over the wire and makes per-tool replace semantics first-class.

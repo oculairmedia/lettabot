@@ -1104,6 +1104,13 @@ ignore unknown fields continue to work unchanged. Clients that want
 to render progressive tool cards key off `status` to know when the
 final args have arrived.
 
+If you are writing a channel adapter or a WS-gateway client, see
+[Channel Adapter Contract](./channel-adapter-contract.md) for the
+full snapshot-and-dedup wire contract (with renderer pseudocode and
+common pitfalls). Treating `tool_call` frames as deltas instead of
+snapshots is the most common adapter bug and produces N duplicate
+tool cards per call.
+
 **Coalescer composition:**
 
 With `LETTABOT_COALESCE_ENABLED` also on (the default), the
