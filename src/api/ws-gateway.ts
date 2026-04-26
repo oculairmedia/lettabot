@@ -16,6 +16,11 @@ import { AgentSessionManager, SessionBusyError } from './agent-session-manager.j
 import type { SDKMessage, SendMessage, MessageContentItem } from '@letta-ai/letta-code-sdk';
 import { createLogger } from '../logger.js';
 import { maybeGenerateConversationTitle } from '../services/conversation-title.js';
+import {
+  BotStreamCoalescer,
+  DEFAULT_COALESCE_WINDOW_MS,
+  type StreamFrame,
+} from './bot-stream-coalescer.js';
 
 const log = createLogger('WsGateway');
 
@@ -82,15 +87,38 @@ const WS_PATH = '/api/v1/agent-gateway';
 const MAX_CONNECTIONS = 100;
 const PING_INTERVAL_MS = 30_000;
 
+/**
+ * Resolve the stream coalescer config from env. Disabled by default to keep
+ * the first rollout safe — flip via `LETTABOT_COALESCE_ENABLED=true`.
+ *
+ * Knobs:
+ *   - LETTABOT_COALESCE_ENABLED: '1' | 'true' to enable (default: off)
+ *   - LETTABOT_COALESCE_WINDOW_MS: positive integer (default: 200)
+ */
+function readCoalesceConfig(): { enabled: boolean; windowMs: number } {
+  const raw = process.env.LETTABOT_COALESCE_ENABLED;
+  const enabled = raw === '1' || raw === 'true';
+  const windowRaw = process.env.LETTABOT_COALESCE_WINDOW_MS;
+  let windowMs = DEFAULT_COALESCE_WINDOW_MS;
+  if (windowRaw) {
+    const parsed = Number.parseInt(windowRaw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) windowMs = parsed;
+  }
+  return { enabled, windowMs };
+}
+
 export class WsGateway {
   private wss: WebSocketServer;
   private sessions: AgentSessionManager;
   private connectionIds = new Map<WebSocket, string>();
+  /** Per-connection coalescer; absent when LETTABOT_COALESCE_ENABLED is off. */
+  private coalescers = new Map<WebSocket, BotStreamCoalescer>();
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private readonly apiKey: string;
   private readonly path: string;
   private readonly maxConnections: number;
   private readonly onSourceUpdate?: (source: { channel: string; chatId: string }) => void;
+  private readonly coalesceConfig: { enabled: boolean; windowMs: number };
 
   constructor(options: WsGatewayOptions) {
     this.apiKey = options.apiKey;
@@ -100,6 +128,7 @@ export class WsGateway {
       onConversationUpdate: options.onConversationUpdate,
     });
     this.onSourceUpdate = options.onSourceUpdate;
+    this.coalesceConfig = readCoalesceConfig();
 
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
     this.wss.on('connection', (ws) => this.onConnection(ws));
@@ -108,7 +137,12 @@ export class WsGateway {
     this.pingTimer = setInterval(() => this.pingAll(), pingMs);
     this.pingTimer.unref?.();
 
-    log.info(`WebSocket gateway ready on ${this.path}`);
+    log.info(
+      `WebSocket gateway ready on ${this.path}` +
+        (this.coalesceConfig.enabled
+          ? ` (stream coalescer ON, window=${this.coalesceConfig.windowMs}ms)`
+          : ' (stream coalescer OFF)'),
+    );
   }
 
   /**
@@ -143,6 +177,10 @@ export class WsGateway {
       this.pingTimer = null;
     }
     await this.sessions.shutdown();
+    for (const coalescer of this.coalescers.values()) {
+      coalescer.dispose();
+    }
+    this.coalescers.clear();
     for (const ws of this.wss.clients) {
       ws.terminate();
     }
@@ -186,6 +224,17 @@ export class WsGateway {
   private onConnection(ws: WebSocket): void {
     const connId = crypto.randomUUID();
     this.connectionIds.set(ws, connId);
+
+    if (this.coalesceConfig.enabled) {
+      this.coalescers.set(
+        ws,
+        new BotStreamCoalescer({
+          windowMs: this.coalesceConfig.windowMs,
+          onFlush: (frame) => this.send(ws, frame),
+        }),
+      );
+    }
+
     log.info(`Connection opened: ${connId.slice(0, 8)}...`);
 
     ws.on('message', (data) => {
@@ -198,6 +247,11 @@ export class WsGateway {
     ws.on('close', () => {
       log.info(`Connection closed: ${connId.slice(0, 8)}...`);
       this.connectionIds.delete(ws);
+      const coalescer = this.coalescers.get(ws);
+      if (coalescer) {
+        coalescer.dispose();
+        this.coalescers.delete(ws);
+      }
       this.sessions.close(connId).catch(() => {});
     });
 
@@ -231,16 +285,22 @@ export class WsGateway {
       case 'message':
         await this.handleClientMessage(ws, connId, payload as ClientMessage);
         break;
-      case 'abort':
+      case 'abort': {
         await this.sessions.abort(connId);
+        // Drop any buffered output for the aborted request — sending stale
+        // partial text after the user cancelled would be wrong.
+        const abortRequestId = (payload as { request_id?: string }).request_id;
+        const coalescer = this.coalescers.get(ws);
+        coalescer?.flushAndDiscard(abortRequestId);
         // Send a synthetic result so the client's stream loop terminates
         this.send(ws, {
           type: 'result',
           success: false,
           aborted: true,
-          request_id: (payload as { request_id?: string }).request_id,
+          request_id: abortRequestId,
         });
         break;
+      }
       case 'session_close':
         await this.sessions.close(connId);
         break;
@@ -378,7 +438,7 @@ export class WsGateway {
 
       const flushAssistantBuffer = () => {
         for (const ev of bufferedEvents) {
-          this.send(ws, { type: 'stream', event: 'assistant', content: ev.content, uuid: ev.uuid, request_id: msg.request_id });
+          this.sendStream(ws, { type: 'stream', event: 'assistant', content: ev.content, uuid: ev.uuid, request_id: msg.request_id });
         }
         bufferedEvents.length = 0;
       };
@@ -426,7 +486,7 @@ export class WsGateway {
           } else {
             // Definitely not <no-reply/> — flush everything we held back, then forward normally
             flushAssistantBuffer();
-            this.send(ws, { type: 'stream', event: 'assistant', content: event.content, uuid: event.uuid, request_id: msg.request_id });
+            this.sendStream(ws, { type: 'stream', event: 'assistant', content: event.content, uuid: event.uuid, request_id: msg.request_id });
           }
         } else {
           // Non-assistant events flush the buffer (tool calls break the no-reply pattern)
@@ -449,11 +509,20 @@ export class WsGateway {
       // After stream ends: suppress if final text was exactly <no-reply/>
       if (assistantBuffer.trim() === '<no-reply/>') {
         log.info(`Suppressed <no-reply/> for connection ${connId.slice(0, 8)}`);
-        // Don't flush — discard the buffered events
+        // Don't flush — discard the buffered events from the no-reply guard.
+        // Anything pending in the coalescer for this request is also stale,
+        // so drop it without emitting.
+        const coalescer = this.coalescers.get(ws);
+        coalescer?.flushAndDiscard(msg.request_id);
       } else if (bufferedEvents.length > 0) {
         // Partial match that never completed (e.g. "<no-r" then stream ended) — flush it
         flushAssistantBuffer();
       }
+
+      // Belt-and-braces: drain any remaining coalescer entries so nothing
+      // sits buffered after the request stream completes (covers SDK-side
+      // edge cases where a 'result' event isn't emitted).
+      this.flushCoalescerFor(ws, msg.request_id);
 
       // Fire-and-forget: generate conversation title from first exchange
       const userText = typeof messageToSend === 'string' ? messageToSend : msg.content;
@@ -476,25 +545,28 @@ export class WsGateway {
     switch (msg.type) {
       case 'assistant':
         if (this.isInternalMessage(msg.content)) break;
-        this.send(ws, { type: 'stream', event: 'assistant', content: msg.content, uuid: msg.uuid, request_id: requestId });
+        this.sendStream(ws, { type: 'stream', event: 'assistant', content: msg.content, uuid: msg.uuid, request_id: requestId });
         break;
       case 'tool_call': {
         // Include toolInput so clients can display tool call details
         const toolInput = (msg as any).toolInput ?? {};
-        this.send(ws, { type: 'stream', event: 'tool_call', tool_name: msg.toolName, tool_call_id: msg.toolCallId, tool_input: toolInput, uuid: msg.uuid, request_id: requestId });
+        this.sendStream(ws, { type: 'stream', event: 'tool_call', tool_name: msg.toolName, tool_call_id: msg.toolCallId, tool_input: toolInput, uuid: msg.uuid, request_id: requestId });
         break;
       }
       case 'tool_result': {
         const resolvedToolName = (msg.toolCallId && toolNameMap?.get(msg.toolCallId)) ?? null;
-        this.send(ws, { type: 'stream', event: 'tool_result', content: msg.content, tool_call_id: msg.toolCallId, tool_name: resolvedToolName, is_error: msg.isError, uuid: msg.uuid, request_id: requestId });
+        this.sendStream(ws, { type: 'stream', event: 'tool_result', content: msg.content, tool_call_id: msg.toolCallId, tool_name: resolvedToolName, is_error: msg.isError, uuid: msg.uuid, request_id: requestId });
         break;
       }
       case 'reasoning':
-        this.send(ws, { type: 'stream', event: 'reasoning', content: msg.content, uuid: msg.uuid, request_id: requestId });
+        this.sendStream(ws, { type: 'stream', event: 'reasoning', content: msg.content, uuid: msg.uuid, request_id: requestId });
         break;
       case 'result': {
         const info = this.sessions.getInfo(connId);
-        this.send(ws, {
+        // Route through coalescer so any pending text drains before the
+        // terminal frame.  The coalescer recognizes type !== 'stream' as
+        // pass-through-with-flush.
+        this.sendStream(ws, {
           type: 'result',
           success: msg.success,
           conversation_id: msg.conversationId ?? info?.conversationId ?? null,
@@ -525,8 +597,39 @@ export class WsGateway {
     }
   }
 
+  /**
+   * Route an outbound frame through the per-connection coalescer when enabled.
+   * Falls back to direct send if the coalescer is disabled or absent.
+   *
+   * Stream events ('assistant', 'reasoning', 'tool_call', 'tool_result') get
+   * coalesced per the rules in BotStreamCoalescer. Other event types
+   * (`type === 'result'`, `type === 'error'`) are passed through but cause
+   * the coalescer to flush any pending entries first, preserving order.
+   */
+  private sendStream(ws: WebSocket, data: ServerEvent): void {
+    const coalescer = this.coalescers.get(ws);
+    if (coalescer) {
+      coalescer.handle(data as unknown as StreamFrame);
+      return;
+    }
+    this.send(ws, data);
+  }
+
+  /** Flush any pending coalescer entries for `requestId` immediately. */
+  private flushCoalescerFor(ws: WebSocket, requestId: string | undefined): void {
+    const coalescer = this.coalescers.get(ws);
+    if (!coalescer) return;
+    coalescer.flushFor(requestId);
+  }
+
   private sendError(ws: WebSocket, code: string, message: string, requestId?: string): void {
-    this.send(ws, { type: 'error', code, message, ...(requestId ? { request_id: requestId } : {}) });
+    // Errors are scoped to a request when one is supplied; route through the
+    // coalescer so any pending stream output flushes first (preserving order).
+    if (requestId) {
+      this.sendStream(ws, { type: 'error', code, message, request_id: requestId });
+    } else {
+      this.send(ws, { type: 'error', code, message });
+    }
   }
 
   private pingAll(): void {
