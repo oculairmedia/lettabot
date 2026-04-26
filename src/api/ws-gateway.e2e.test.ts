@@ -444,6 +444,122 @@ describe('ws-gateway e2e: partial-JSON tool_call streaming', () => {
     }
   });
 
+  // --- flag matrix (lettabot-uww.8) ---------------------------------------
+  //
+  // Drive the same Read script through every combination of
+  // (LETTABOT_COALESCE_ENABLED, LETTABOT_PARTIAL_JSON_ENABLED) and assert
+  // per-combination frame-count bounds + that the final accumulated
+  // tool_input is identical across all four. This locks in the half-
+  // enabled fallback paths that the uww.7 fixtures only exercise via the
+  // both-on / both-off implicit goldens.
+  //
+  // | Combo                          | tool_call frames | running | completed | notes |
+  // | (COALESCE=0, PARTIAL_JSON=0)   | exactly 1        | 0       | 0         | legacy single emit, no status field |
+  // | (COALESCE=1, PARTIAL_JSON=0)   | exactly 1        | 0       | 0         | coalescer is a no-op for a single frame |
+  // | (COALESCE=0, PARTIAL_JSON=1)   | ≥2 (running×N+terminal) | ≥1 | exactly 1 | snapshots emerge 1:1 to the wire |
+  // | (COALESCE=1, PARTIAL_JSON=1)   | ≤ N+1, typically 1 | 0..N  | exactly 1 | replace-by-id absorbs running noise; terminal triggers immediate flush |
+
+  describe.each([
+    {
+      label: 'COALESCE=0, PARTIAL_JSON=0 (legacy single emit)',
+      coalesce: false,
+      partialJson: false,
+      assertCounts: (toolCalls: ServerFrame[]) => {
+        expect(toolCalls).toHaveLength(1);
+        expect(toolCalls.filter((tc) => tc.status === 'running')).toHaveLength(0);
+        expect(toolCalls.filter((tc) => tc.status === 'completed')).toHaveLength(0);
+        // No running frames must leak when partial-JSON is off.
+        for (const tc of toolCalls) expect(tc.status).toBeUndefined();
+      },
+    },
+    {
+      label: 'COALESCE=1, PARTIAL_JSON=0 (coalesced legacy)',
+      coalesce: true,
+      partialJson: false,
+      assertCounts: (toolCalls: ServerFrame[]) => {
+        expect(toolCalls).toHaveLength(1);
+        expect(toolCalls.filter((tc) => tc.status === 'running')).toHaveLength(0);
+        expect(toolCalls.filter((tc) => tc.status === 'completed')).toHaveLength(0);
+        for (const tc of toolCalls) expect(tc.status).toBeUndefined();
+      },
+    },
+    {
+      label: 'COALESCE=0, PARTIAL_JSON=1 (uncoalesced progressive)',
+      coalesce: false,
+      partialJson: true,
+      assertCounts: (toolCalls: ServerFrame[]) => {
+        const running = toolCalls.filter((tc) => tc.status === 'running');
+        const completed = toolCalls.filter((tc) => tc.status === 'completed');
+        // ≥1 running snapshot (parser yields a structurally-distinct
+        // value at least once before the terminal frame) + exactly 1
+        // completed.
+        expect(running.length).toBeGreaterThanOrEqual(1);
+        expect(completed).toHaveLength(1);
+        // Frame count is the inflation contrast control: > 1.
+        expect(toolCalls.length).toBeGreaterThan(1);
+      },
+    },
+    {
+      label: 'COALESCE=1, PARTIAL_JSON=1 (target state — current default)',
+      coalesce: true,
+      partialJson: true,
+      assertCounts: (toolCalls: ServerFrame[]) => {
+        const completed = toolCalls.filter((tc) => tc.status === 'completed');
+        // Coalescer's replace-by-id absorbs running snapshots; the
+        // terminal completed frame triggers an immediate flush. In
+        // synchronous-burst tests like ours the coalescer collapses to
+        // a single frame (the terminal). Allow ≤ N+1 as an upper bound
+        // to stay robust against timer fires across event-loop turns.
+        expect(toolCalls.length).toBeLessThanOrEqual(5);
+        expect(completed).toHaveLength(1);
+        // Frame count is strictly less than the uncoalesced path.
+        // (The uncoalesced path emits 4 chunks → up to ~4 running + 1
+        // terminal; the coalesced path collapses running snapshots.)
+      },
+    },
+  ])('flag matrix · $label', (cfg) => {
+    it('drives the same Read script with same final tool_input', async () => {
+      const ctx = await startHarness({ coalesce: cfg.coalesce, partialJson: cfg.partialJson });
+      try {
+        const script = scriptToolCallStream({
+          toolCallId: 'tc-matrix-read',
+          toolName: 'Read',
+          argChunks: [
+            '{"file_p',
+            'ath":"/opt/sta',
+            'cks/lettabot/src/api/ws-',
+            'gateway.ts"}',
+          ],
+        });
+
+        const frames = await runScriptedTurn(ctx, script);
+        const toolCalls = frames.filter(
+          (f) => f.type === 'stream' && f.event === 'tool_call',
+        );
+
+        // INVARIANT 1: at least one tool_call frame is always emitted.
+        expect(toolCalls.length).toBeGreaterThanOrEqual(1);
+
+        // INVARIANT 2: the LAST tool_call frame carries the fully
+        // accumulated args, byte-identical across all four combos.
+        const last = toolCalls[toolCalls.length - 1]!;
+        expect(last.tool_input).toEqual({
+          file_path: '/opt/stacks/lettabot/src/api/ws-gateway.ts',
+        });
+        expect(last.tool_call_id).toBe('tc-matrix-read');
+        expect(last.tool_name).toBe('Read');
+
+        // INVARIANT 3: stream terminates with a `result` frame.
+        expect(frames[frames.length - 1]!.type).toBe('result');
+
+        // Per-combination bounds.
+        cfg.assertCounts(toolCalls);
+      } finally {
+        await ctx.stop();
+      }
+    });
+  });
+
   it('two interleaved tool_calls keep their snapshots separated by id', async () => {
     // Defends against a regression where the per-id buffer gets cross-
     // contaminated when two tools stream concurrently in one turn.
