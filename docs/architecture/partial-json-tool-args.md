@@ -170,11 +170,13 @@ Run letta-mobile against patched lettabot, send "Read this file" instruction, ve
 
 Same shape as coalescer:
 
-1. Land parser + integration behind `LETTABOT_PARTIAL_JSON_ENABLED=false`.
-2. Bake on Emmanuel's daemon.
-3. Default-on, kill switch retained for two releases.
+1. ✅ Land parser + integration behind `LETTABOT_PARTIAL_JSON_ENABLED=false` (`lettabot-uww.1`–`.4`).
+2. ✅ Bake on Emmanuel's daemon — mobile UI verified on Pixel 2XL (`lettabot-uww.5`, 2026-04-26).
+3. ✅ Default-on, kill switch retained for two releases (`lettabot-uww.6`).
 
-Order matters: **coalescer first** (otherwise progressive snapshots inflate frame count). Both can land in the same release if scheduling permits, but coalescer must be enabled first.
+Cleanup (kill-switch removal + dead legacy single-frame path) is scheduled for two release cycles after step 3, tracked by the follow-up bead filed alongside `uww.6`.
+
+Order matters: **coalescer first** (otherwise progressive snapshots inflate frame count). The coalescer flipped on in `lettabot-aie.6` (commit `f3632ff`); partial-JSON flipped on in `uww.6`.
 
 ---
 

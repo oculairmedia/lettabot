@@ -116,25 +116,33 @@ function readCoalesceConfig(): { enabled: boolean; windowMs: number } {
 }
 
 /**
- * Resolve the partial-JSON tool_call config from env. **Disabled by
- * default** for the first rollout cycle (lettabot-uww). Flip via
- * `LETTABOT_PARTIAL_JSON_ENABLED=1` (or `=true`) to opt in. When
- * enabled, the gateway emits a fresh `tool_call` snapshot on every
- * structurally-distinct parse-extension during streaming, with
+ * Resolve the partial-JSON tool_call config from env. **Enabled by
+ * default** as of lettabot-uww.6 (after letta-mobile UI verification
+ * in uww.5 confirmed progressive tool cards render correctly on
+ * Pixel 2XL). Set `LETTABOT_PARTIAL_JSON_ENABLED=0` (or `false`) as
+ * a kill switch if a regression is observed; the kill switch is
+ * retained for two release cycles per the rollout plan in
+ * docs/architecture/partial-json-tool-args.md §6, then removed
+ * along with the legacy single-frame fallback in a follow-up bead.
+ *
+ * When enabled, the gateway emits a fresh `tool_call` snapshot on
+ * every structurally-distinct parse-extension during streaming, with
  * `status='running'` while the args are still arriving and
  * `status='completed'` on the final emit. The BotStreamCoalescer's
  * replace-by-id rule absorbs the per-byte snapshot noise.
  *
  * When disabled the gateway uses the bespoke accumulator that emits
  * a single tool_call frame per call, after the full args buffer has
- * been received (legacy behavior, matches mobile/desktop today).
+ * been received (legacy behavior).
  *
  * Knobs:
- *   - LETTABOT_PARTIAL_JSON_ENABLED: '1' | 'true' to enable (default: off)
+ *   - LETTABOT_PARTIAL_JSON_ENABLED: '0' | 'false' to disable (default: on)
  */
 function readPartialJsonConfig(): { enabled: boolean } {
   const raw = process.env.LETTABOT_PARTIAL_JSON_ENABLED;
-  const enabled = raw === '1' || raw === 'true';
+  // Opt-out form: only explicit '0' or 'false' disables. Unset, '1', 'true',
+  // or any other value → enabled (default-on).
+  const enabled = raw !== '0' && raw !== 'false';
   return { enabled };
 }
 

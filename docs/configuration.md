@@ -1081,18 +1081,20 @@ leaving coalescing as the only behaviour.
 
 ### WS Gateway Partial-JSON tool_call snapshots
 
-The WS gateway can render tool_call argument streams progressively —
+The WS gateway renders tool_call argument streams progressively —
 emitting a fresh `tool_call` snapshot each time the streaming JSON
-buffer parses to a structurally-distinct value. With this enabled,
-clients can show a tool card text growing in real time (e.g.
-`file_path` appears, then `content` starts streaming) instead of a
-"thinking…" placeholder until the full JSON is received.
+buffer parses to a structurally-distinct value. Clients see tool
+card text grow in real time (e.g. `file_path` appears, then
+`content` starts streaming) instead of a "thinking…" placeholder
+until the full JSON is received.
 
-Disabled by default for the first rollout cycle (`lettabot-uww`).
+Progressive snapshots are **enabled by default** as of this release.
+Set `LETTABOT_PARTIAL_JSON_ENABLED=0` (or `=false`) to disable as a
+kill switch if a regression is observed.
 
 | Env Variable | Type | Default | Description |
 |--------------|------|---------|-------------|
-| `LETTABOT_PARTIAL_JSON_ENABLED` | `0` \| `1` \| `false` \| `true` | `false` (off) | When enabled, the gateway emits one `tool_call` frame per parse-extension during streaming with `status='running'`, plus a terminal frame on type boundary with `status='completed'`. Snapshots are deduped by structural deep equality on the parsed value, and the BotStreamCoalescer's replace-by-id rule absorbs the per-byte snapshot noise on the wire. When disabled, the gateway emits a single `tool_call` frame per call with the fully accumulated args after the SDK signals the type boundary (legacy behavior). |
+| `LETTABOT_PARTIAL_JSON_ENABLED` | `0` \| `1` \| `false` \| `true` | `true` (on) | When enabled, the gateway emits one `tool_call` frame per parse-extension during streaming with `status='running'`, plus a terminal frame on type boundary with `status='completed'`. Snapshots are deduped by structural deep equality on the parsed value, and the BotStreamCoalescer's replace-by-id rule absorbs the per-byte snapshot noise on the wire. Set to `0` or `false` to revert to a single `tool_call` frame per call with the fully accumulated args (legacy behavior). |
 
 **Wire shape:**
 
@@ -1104,10 +1106,28 @@ final args have arrived.
 
 **Coalescer composition:**
 
-When both flags are on, the coalescer's per-id replace rule means the
-wire only sees the *latest* running snapshot per coalesce window plus
-the terminal completed frame. This keeps frame counts bounded even
-on long argument streams.
+With `LETTABOT_COALESCE_ENABLED` also on (the default), the
+coalescer's per-id replace rule means the wire only sees the
+*latest* running snapshot per coalesce window plus the terminal
+completed frame. This keeps frame counts bounded even on long
+argument streams.
+
+**Mobile compatibility:**
+
+letta-mobile UI was verified against progressive snapshots on Pixel
+2XL during `lettabot-uww.5` (manual verification, 2026-04-26 14:31
+EDT). Older mobile builds that ignore the `status` field still
+function correctly because the field is wire-additive — they will
+just render the latest snapshot on each frame, equivalent to the
+pre-flag legacy behaviour but with intermediate updates.
+
+**Kill-switch retention:**
+
+The kill switch remains in tree for **two release cycles** following
+this default-on flip. After that, the env var handling and the
+legacy single-frame fallback path are removed in the cleanup bead
+filed alongside this change, leaving progressive snapshots as the
+only behaviour.
 
 ### OpenAI-Compatible Endpoint
 
@@ -1156,6 +1176,6 @@ Reference:
 | `OPENAI_TTS_MODEL` | OpenAI TTS model (default: `tts-1`) |
 | `LETTABOT_COALESCE_ENABLED` | WS gateway stream coalescer toggle (default: `true` (on); set `0` or `false` to kill-switch). See [WS Gateway Stream Coalescing](#ws-gateway-stream-coalescing). |
 | `LETTABOT_COALESCE_WINDOW_MS` | WS coalescer flush window in ms (default: `200`). |
-| `LETTABOT_PARTIAL_JSON_ENABLED` | WS gateway partial-JSON tool_call snapshots (default: `false` (off); set `1` or `true` to enable). See [WS Gateway Partial-JSON tool_call snapshots](#ws-gateway-partial-json-tool_call-snapshots). |
+| `LETTABOT_PARTIAL_JSON_ENABLED` | WS gateway partial-JSON tool_call snapshots (default: `true` (on); set `0` or `false` to kill-switch). See [WS Gateway Partial-JSON tool_call snapshots](#ws-gateway-partial-json-tool_call-snapshots). |
 
 See [SKILL.md](../SKILL.md) for complete environment variable reference.
