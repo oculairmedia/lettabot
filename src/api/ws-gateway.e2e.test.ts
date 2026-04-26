@@ -44,12 +44,27 @@ import type { AgentSessionManager } from './agent-session-manager.js';
  * Letta SDK or the network. Cast to AgentSessionManager via the
  * gateway's `sessionManager` constructor option.
  */
+/** Sentinel that asks the fake to throw mid-stream, simulating an SDK error. */
+type ThrowSentinel = { __throw: string };
+type ScriptStep = SDKMessage | ThrowSentinel;
+
+function isThrowSentinel(step: ScriptStep): step is ThrowSentinel {
+  return typeof step === 'object' && step !== null && '__throw' in step;
+}
+
 class FakeAgentSessionManager {
-  private scripts = new Map<string, SDKMessage[]>();
+  private scripts = new Map<string, ScriptStep[]>();
   private opened = new Map<string, { agentId: string; conversationId: string | null }>();
+  /**
+   * Connection IDs flagged as aborted/closed. The generator checks this
+   * between yields and returns early so abort/disconnect from the test
+   * driver actually halts the stream (mirroring the real SDK's
+   * session.abort() throwing into the iterator).
+   */
+  private aborted = new Set<string>();
 
   /** Queue the SDK event sequence the next sendAndStream() call will yield. */
-  queueScript(connectionId: string, events: SDKMessage[]): void {
+  queueScript(connectionId: string, events: ScriptStep[]): void {
     this.scripts.set(connectionId, events);
   }
 
@@ -60,6 +75,7 @@ class FakeAgentSessionManager {
   ): Promise<SDKInitMessage> {
     const convId = conversationId ?? `conv-${connectionId.slice(0, 8)}`;
     this.opened.set(connectionId, { agentId, conversationId: convId });
+    this.aborted.delete(connectionId);
     return {
       type: 'init',
       agentId,
@@ -75,8 +91,17 @@ class FakeAgentSessionManager {
     _message: SendMessage,
   ): AsyncGenerator<SDKMessage> {
     const script = this.scripts.get(connectionId) ?? [];
-    for (const event of script) {
-      yield event;
+    for (const step of script) {
+      if (this.aborted.has(connectionId)) return;
+      if (isThrowSentinel(step)) {
+        throw new Error(step.__throw);
+      }
+      yield step;
+      // Yield to the event loop between events so the test driver can
+      // interleave control frames (abort, close) before the next yield.
+      // Cost is sub-ms per event; existing tests with 4-5 events stay
+      // well under their <5s budget.
+      await new Promise<void>((r) => setImmediate(r));
     }
   }
 
@@ -85,12 +110,13 @@ class FakeAgentSessionManager {
   }
 
   async close(connectionId: string): Promise<void> {
+    this.aborted.add(connectionId);
     this.opened.delete(connectionId);
     this.scripts.delete(connectionId);
   }
 
-  async abort(_connectionId: string): Promise<void> {
-    /* no-op for the harness */
+  async abort(connectionId: string): Promise<void> {
+    this.aborted.add(connectionId);
   }
 
   getInfo(connectionId: string) {
@@ -621,3 +647,262 @@ describe('ws-gateway e2e: partial-JSON tool_call streaming', () => {
     }
   });
 });
+
+// --- cancel + disconnect coverage (lettabot-uww.10) ----------------------
+//
+// Four scenarios on top of the uww.7 harness, all using the per-yield
+// setImmediate pacing the fake added so the test driver can interleave
+// control frames (abort) and ws.close() between SDK events.
+
+describe('ws-gateway e2e: cancel and disconnect', () => {
+  it('client disconnects mid-stream — gateway cleans up the session without crashing', async () => {
+    // Scenario 1: client closes ws after the first running snapshot. The
+    // gateway should run its `close` handler (calls sessions.close), the
+    // in-flight stream should terminate, and the session count should
+    // drop to zero. Sends to a closed socket are silent (readyState
+    // check), so the lack of a crash is the success signal.
+    const ctx = await startHarness({ coalesce: false, partialJson: true });
+    try {
+      const ws = await connectClient(ctx);
+      const frames: ServerFrame[] = [];
+      ws.on('message', (data) => frames.push(JSON.parse(String(data)) as ServerFrame));
+
+      // session_start → wait for session_init
+      ws.send(JSON.stringify({ type: 'session_start', agent_id: 'agent-disconnect-1' }));
+      await waitFor(frames, (f) => f.type === 'session_init');
+
+      // Queue a script with many snapshots so we can disconnect partway.
+      const connIds = Array.from((ctx.fake as unknown as { opened: Map<string, unknown> }).opened.keys());
+      ctx.fake.queueScript(connIds[0]!, scriptToolCallStream({
+        toolCallId: 'tc-disc-1',
+        toolName: 'Read',
+        argChunks: ['{"f', 'ile_p', 'ath":', '"/tmp', '/x"}'],
+      }));
+      ws.send(JSON.stringify({ type: 'message', content: 'go', request_id: 'req-d1' }));
+
+      // Wait for the first tool_call snapshot, then close.
+      await waitFor(frames, (f) => f.type === 'stream' && f.event === 'tool_call');
+      ws.close();
+
+      // Wait for the gateway-side close handler to run — sessions.close
+      // is called from the close listener, so we poll briefly.
+      await waitUntil(() => ctx.fake.size === 0, 1000);
+      expect(ctx.fake.size).toBe(0);
+      // Connection count on the WSS drops too (post-close cleanup).
+      expect(ctx.gateway.connectionCount).toBe(0);
+    } finally {
+      await ctx.stop();
+    }
+  });
+
+  it('explicit abort frame stops further snapshots and emits synthetic aborted result', async () => {
+    // Scenario 3: client sends {type:'abort', request_id} mid-stream.
+    // Gateway calls sessions.abort, the fake flips its aborted flag, the
+    // generator returns on the next iteration, and the gateway sends a
+    // synthetic {type:'result', aborted: true} frame. No further
+    // tool_call frames for that id may appear after the abort.
+    const ctx = await startHarness({ coalesce: false, partialJson: true });
+    try {
+      const ws = await connectClient(ctx);
+      const frames: ServerFrame[] = [];
+      ws.on('message', (data) => frames.push(JSON.parse(String(data)) as ServerFrame));
+
+      ws.send(JSON.stringify({ type: 'session_start', agent_id: 'agent-abort-1' }));
+      await waitFor(frames, (f) => f.type === 'session_init');
+
+      const connIds = Array.from((ctx.fake as unknown as { opened: Map<string, unknown> }).opened.keys());
+      // Long script so there are events left for the abort to cancel.
+      ctx.fake.queueScript(connIds[0]!, scriptToolCallStream({
+        toolCallId: 'tc-abort-1',
+        toolName: 'Read',
+        argChunks: ['{"f', 'ile_p', 'ath":"', '/tmp/', 'long-fil', 'ename.t', 'xt"}'],
+      }));
+      ws.send(JSON.stringify({ type: 'message', content: 'go', request_id: 'req-a1' }));
+
+      // Wait for the first running snapshot to confirm streaming started.
+      await waitFor(frames, (f) => f.type === 'stream' && f.event === 'tool_call' && f.status === 'running');
+
+      const framesAtAbort = frames.length;
+      ws.send(JSON.stringify({ type: 'abort', request_id: 'req-a1' }));
+
+      // Wait for the synthetic aborted result.
+      const abortedResult = await waitFor(
+        frames,
+        (f) => f.type === 'result' && (f as { aborted?: boolean }).aborted === true,
+      );
+      expect((abortedResult as { aborted?: boolean }).aborted).toBe(true);
+      expect((abortedResult as { request_id?: string }).request_id).toBe('req-a1');
+
+      // Give the generator one more event-loop turn — confirm no further
+      // tool_call frames for tc-abort-1 sneak in after the abort.
+      await new Promise((r) => setTimeout(r, 50));
+      const postAbortToolCalls = frames
+        .slice(framesAtAbort)
+        .filter((f) => f.type === 'stream' && f.event === 'tool_call' && f.tool_call_id === 'tc-abort-1');
+      // Some snapshots may have already been emitted between
+      // framesAtAbort and the abort handler running — that's fine. The
+      // contract is "no further snapshots once the gateway processed the
+      // abort", which we verify by the result frame appearing without a
+      // status='completed' tool_call frame after it.
+      const completedAfterAbort = postAbortToolCalls.filter((tc) => tc.status === 'completed');
+      expect(completedAfterAbort).toHaveLength(0);
+
+      ws.close();
+      await new Promise<void>((r) => ws.once('close', () => r()));
+    } finally {
+      await ctx.stop();
+    }
+  });
+
+  it('SDK stream error mid-snapshot emits an error frame, no stale running card after', async () => {
+    // Scenario 4: the generator throws partway through. Gateway's
+    // catch block runs and calls sendError(STREAM_ERROR). No further
+    // tool_call frames may follow the error.
+    const ctx = await startHarness({ coalesce: false, partialJson: true });
+    try {
+      const ws = await connectClient(ctx);
+      const frames: ServerFrame[] = [];
+      ws.on('message', (data) => frames.push(JSON.parse(String(data)) as ServerFrame));
+
+      ws.send(JSON.stringify({ type: 'session_start', agent_id: 'agent-err-1' }));
+      await waitFor(frames, (f) => f.type === 'session_init');
+
+      const connIds = Array.from((ctx.fake as unknown as { opened: Map<string, unknown> }).opened.keys());
+      // Yield 2 snapshots, then throw — simulates an SDK that fails
+      // partway through tool_call argument streaming.
+      ctx.fake.queueScript(connIds[0]!, [
+        {
+          type: 'tool_call',
+          toolCallId: 'tc-err-1',
+          toolName: 'Read',
+          toolInput: {},
+          rawArguments: '{"f',
+          uuid: 'u-err-0',
+        },
+        {
+          type: 'tool_call',
+          toolCallId: 'tc-err-1',
+          toolName: 'Read',
+          toolInput: {},
+          rawArguments: '{"file_p',
+          uuid: 'u-err-1',
+        },
+        { __throw: 'simulated SDK stream error' },
+      ]);
+      ws.send(JSON.stringify({ type: 'message', content: 'go', request_id: 'req-e1' }));
+
+      // Wait for the error frame.
+      const errorFrame = await waitFor(frames, (f) => f.type === 'error');
+      expect((errorFrame as { code?: string }).code).toBe('STREAM_ERROR');
+      expect((errorFrame as { message?: string }).message).toContain('simulated SDK stream error');
+      expect((errorFrame as { request_id?: string }).request_id).toBe('req-e1');
+
+      // Confirm no tool_call frame for tc-err-1 appears AFTER the error.
+      const errorIdx = frames.indexOf(errorFrame);
+      const toolCallsAfterError = frames
+        .slice(errorIdx + 1)
+        .filter((f) => f.type === 'stream' && f.event === 'tool_call');
+      expect(toolCallsAfterError).toHaveLength(0);
+
+      // And no result frame is sent after a stream error — the error
+      // itself is the terminal frame. Give one event-loop tick to
+      // confirm.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(0);
+
+      ws.close();
+      await new Promise<void>((r) => ws.once('close', () => r()));
+    } finally {
+      await ctx.stop();
+    }
+  });
+
+  it('disconnect followed by reconnect with same agent_id starts a fresh stream', async () => {
+    // Scenario 2 (gateway-side portion): after a mid-stream disconnect,
+    // a new connection from the same agent gets a fresh session and the
+    // new turn's frames are not cross-contaminated by the prior turn.
+    // The mobile-side wucn-snapshot-recovery path (timeline replay
+    // dedup) is out of scope here — that's the letta-mobile aie.7 fix
+    // and is verified manually on Pixel 2XL.
+    const ctx = await startHarness({ coalesce: false, partialJson: true });
+    try {
+      // --- turn 1: disconnect mid-stream ---
+      const wsA = await connectClient(ctx);
+      const framesA: ServerFrame[] = [];
+      wsA.on('message', (data) => framesA.push(JSON.parse(String(data)) as ServerFrame));
+      wsA.send(JSON.stringify({ type: 'session_start', agent_id: 'agent-reconnect-1' }));
+      await waitFor(framesA, (f) => f.type === 'session_init');
+
+      const connIdsA = Array.from((ctx.fake as unknown as { opened: Map<string, unknown> }).opened.keys());
+      ctx.fake.queueScript(connIdsA[0]!, scriptToolCallStream({
+        toolCallId: 'tc-turn-A',
+        toolName: 'Read',
+        argChunks: ['{"f', 'ile_p', 'ath":"/A"}'],
+      }));
+      wsA.send(JSON.stringify({ type: 'message', content: 'turn-A', request_id: 'req-A' }));
+      await waitFor(framesA, (f) => f.type === 'stream' && f.event === 'tool_call');
+      wsA.close();
+      await waitUntil(() => ctx.fake.size === 0, 1000);
+
+      // --- turn 2: reconnect, fresh session ---
+      const wsB = await connectClient(ctx);
+      const framesB: ServerFrame[] = [];
+      wsB.on('message', (data) => framesB.push(JSON.parse(String(data)) as ServerFrame));
+      wsB.send(JSON.stringify({ type: 'session_start', agent_id: 'agent-reconnect-1' }));
+      await waitFor(framesB, (f) => f.type === 'session_init');
+
+      const connIdsB = Array.from((ctx.fake as unknown as { opened: Map<string, unknown> }).opened.keys());
+      // Different tool_call_id and different file path so we can prove
+      // there's no leakage.
+      ctx.fake.queueScript(connIdsB[0]!, scriptToolCallStream({
+        toolCallId: 'tc-turn-B',
+        toolName: 'Read',
+        argChunks: ['{"file_path":"/B"}'],
+      }));
+      wsB.send(JSON.stringify({ type: 'message', content: 'turn-B', request_id: 'req-B' }));
+      await waitFor(framesB, (f) => f.type === 'result');
+
+      // No tc-turn-A frames leaked into turn B's stream.
+      const turnBToolCalls = framesB.filter(
+        (f) => f.type === 'stream' && f.event === 'tool_call',
+      );
+      for (const tc of turnBToolCalls) {
+        expect(tc.tool_call_id).toBe('tc-turn-B');
+      }
+      // Final tool_input for turn B is /B, not /A.
+      const completedB = turnBToolCalls.filter((tc) => tc.status === 'completed').pop();
+      expect(completedB?.tool_input).toEqual({ file_path: '/B' });
+
+      wsB.close();
+      await new Promise<void>((r) => wsB.once('close', () => r()));
+    } finally {
+      await ctx.stop();
+    }
+  });
+});
+
+// --- helpers used only by the cancel/disconnect block --------------------
+
+async function waitFor<T>(
+  source: T[],
+  predicate: (item: T) => boolean,
+  timeoutMs = 2000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  // Poll the array because vitest doesn't have a built-in observable.
+  while (Date.now() < deadline) {
+    const hit = source.find(predicate);
+    if (hit) return hit;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error(`waitFor timed out after ${timeoutMs}ms; source length=${source.length}`);
+}
+
+async function waitUntil(check: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error(`waitUntil timed out after ${timeoutMs}ms`);
+}
