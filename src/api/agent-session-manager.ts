@@ -302,6 +302,14 @@ export class AgentSessionManager {
    * the conversation is likely corrupted. We close the session, clear the
    * persisted conversation, re-open with a fresh conversation, and retry
    * the message once.
+   *
+   * IMPORTANT: Recovery is only safe when **no content has been delivered**
+   * to the caller yet. Once we yield an assistant/tool_call/tool_result/
+   * reasoning message it has already been forwarded over the wire and the
+   * client has rendered it. Retrying on a fresh conversation in that state
+   * produces a SECOND complete answer, which the client renders as a
+   * doubled bubble (root cause of lettabot-y4j retry-doubles-output bug).
+   * Mirrors the `nothingDelivered` guard in `bot.ts::buildResultRetryDecision`.
    */
    private async *_doSendAndStream(
     managed: ManagedSession,
@@ -311,6 +319,9 @@ export class AgentSessionManager {
   ): AsyncGenerator<SDKMessage> {
     // Clear the aborted flag at the start of each new send
     managed.aborted = false;
+    // Track whether we've yielded any user-visible content. Recovery is
+    // unsafe once this flips true — see the docstring above.
+    let deliveredContent = false;
     try {
       // Pre-send: populate graphiti context + agent discovery blocks BEFORE the
       // agent sees the message.  This is the gateway path — channel-based messages
@@ -347,6 +358,25 @@ export class AgentSessionManager {
           const result = msg as { success?: boolean; conversationId?: string; error?: string };
           const wasAborted = managed.aborted || this.conversationStore.wasRecentlyAborted(managed.agentId);
           if (!result.success && !isRetry && !wasAborted) {
+            // ── Retry-doubles-output guard (lettabot-y4j) ──
+            // If we already yielded user-visible content, the client has
+            // rendered it. Retrying on a new conversation would produce
+            // a SECOND complete answer (doubled bubble). Mirrors the
+            // `nothingDelivered` guard in bot.ts. Accept the partial
+            // result; clear the conversation so the next turn starts fresh.
+            if (deliveredContent) {
+              log.warn(
+                `Conversation failed for agent ${managed.agentId} ` +
+                `AFTER partial delivery (error: ${result.error ?? 'unknown'}). ` +
+                `Skipping recovery to avoid doubled output (lettabot-y4j). ` +
+                `Clearing conversation for next turn.`
+              );
+              this.conversationStore.clear(managed.agentId);
+              managed.state = 'error';
+              yield msg;
+              break;
+            }
+
             log.warn(
               `Conversation failed for agent ${managed.agentId} ` +
               `(error: ${result.error ?? 'unknown'}). Clearing stale conversation and retrying...`
@@ -376,6 +406,18 @@ export class AgentSessionManager {
           // Aborted run (in-session or recently aborted via persisted flag) —
           // skip conversation recovery, keep context intact, retry once on same conversation.
           if (!result.success && wasAborted && !isRetry) {
+            // Same retry-doubles-output guard: if content was delivered before
+            // the abort took effect, do NOT retry — would produce a doubled answer.
+            if (deliveredContent) {
+              log.warn(
+                `Post-abort failure for agent ${managed.agentId.slice(0, 12)}... ` +
+                `AFTER partial delivery — skipping retry to avoid doubled output (lettabot-y4j).`
+              );
+              this.conversationStore.clearAborted(managed.agentId);
+              managed.state = 'error';
+              yield msg;
+              break;
+            }
             log.info(
               `Post-abort failure for agent ${managed.agentId.slice(0, 12)}... — ` +
               `conversation may have incomplete tool call. Retrying on same conversation...`
@@ -413,6 +455,17 @@ export class AgentSessionManager {
           break;
         }
 
+        // Track user-visible delivery for the retry-doubles-output guard.
+        // We only count message types the WS gateway actually forwards
+        // to the client as content (not init / stream_event / retry).
+        if (
+          msg.type === 'assistant' ||
+          msg.type === 'tool_call' ||
+          msg.type === 'tool_result' ||
+          msg.type === 'reasoning'
+        ) {
+          deliveredContent = true;
+        }
         yield msg;
       }
       managed.state = 'ready';
@@ -426,7 +479,8 @@ export class AgentSessionManager {
       );
 
       // 409 Approval Conflict — recover approvals and retry once
-      if (classified.type === 'approval_conflict' && !isRetry) {
+      // Skip retry if content was already delivered (lettabot-y4j guard).
+      if (classified.type === 'approval_conflict' && !isRetry && !deliveredContent) {
         log.info('Attempting approval conflict recovery...');
         const recovered = await recoverApprovalConflict(
           managed.agentId,
@@ -438,10 +492,16 @@ export class AgentSessionManager {
           yield* this._doSendAndStream(managed, connectionId, message, true);
           return;
         }
+      } else if (classified.type === 'approval_conflict' && deliveredContent) {
+        log.warn(
+          `Approval conflict for agent ${managed.agentId.slice(0, 12)}... ` +
+          `AFTER partial delivery — skipping retry to avoid doubled output (lettabot-y4j).`
+        );
       }
 
       // 404 Conversation Missing — clear store, re-open, retry once
-      if (classified.type === 'conversation_missing' && !isRetry) {
+      // Skip retry if content was already delivered (lettabot-y4j guard).
+      if (classified.type === 'conversation_missing' && !isRetry && !deliveredContent) {
         log.info('Attempting conversation recovery (clear + re-open)...');
         managed.state = 'closed';
         try { managed.session.close(); } catch { /* swallow */ }
@@ -460,6 +520,11 @@ export class AgentSessionManager {
         retryManaged.state = 'busy';
         yield* this._doSendAndStream(retryManaged, connectionId, message, true);
         return;
+      } else if (classified.type === 'conversation_missing' && deliveredContent) {
+        log.warn(
+          `Conversation missing for agent ${managed.agentId.slice(0, 12)}... ` +
+          `AFTER partial delivery — skipping retry to avoid doubled output (lettabot-y4j).`
+        );
       }
 
       // Fatal errors (auth) — invalidate the session so next attempt creates a fresh one
