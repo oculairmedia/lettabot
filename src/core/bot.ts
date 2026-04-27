@@ -22,6 +22,7 @@ import { formatMessageEnvelope, formatGroupBatchEnvelope, type SessionContextOpt
 import type { GroupBatcher } from './group-batcher.js';
 import { recoverPendingApprovalsWithSdk } from './session-sdk-compat.js';
 import { redactOutbound } from './redact.js';
+import { guardOutbound } from './envelope-guard.js';
 import {
   hasIncompleteActionsTag,
   hasUnclosedActionsBlock,
@@ -910,17 +911,33 @@ export class LettaBot implements AgentSession {
     adapter.onMessage = (msg) => this.handleMessage(msg, adapter);
     adapter.onCommand = (cmd, chatId, args, forcePerChat) => this.handleCommand(cmd, adapter.id, chatId, args, forcePerChat);
 
-    // Wrap outbound methods when any redaction layer is active.
-    // Secrets are enabled by default unless explicitly disabled.
+    // Wrap outbound methods. Two layers compose here, redaction-then-
+    // envelope-guard, both applied unconditionally on the guard side
+    // (the guard is a no-op when no envelope marker is present, so
+    // it's free for the common path) and conditionally on the
+    // redaction side (secrets default-on, PII default-off).
+    //
+    // Order matters: redaction first so secret values inside an
+    // envelope are still redacted *before* the envelope strip removes
+    // the surrounding tag — defense-in-depth in case the guard regex
+    // ever misses a malformed envelope.
     const redactionConfig = this.config.redaction;
     const shouldRedact = redactionConfig?.secrets !== false || redactionConfig?.pii === true;
-    if (shouldRedact) {
-      const origSend = adapter.sendMessage.bind(adapter);
-      adapter.sendMessage = (msg) => origSend({ ...msg, text: redactOutbound(msg.text, redactionConfig) });
 
-      const origEdit = adapter.editMessage.bind(adapter);
-      adapter.editMessage = (chatId, messageId, text) => origEdit(chatId, messageId, redactOutbound(text, redactionConfig));
-    }
+    const log = this.log;
+    const sanitizeOutbound = (text: string): string => {
+      const redacted = shouldRedact ? redactOutbound(text, redactionConfig) : text;
+      // lettabot-y4j: defensive strip of leaked <system-reminder>
+      // envelopes that should never reach end users.
+      return guardOutbound(redacted, (warn) => log.warn(warn));
+    };
+
+    const origSend = adapter.sendMessage.bind(adapter);
+    adapter.sendMessage = (msg) => origSend({ ...msg, text: sanitizeOutbound(msg.text) });
+
+    const origEdit = adapter.editMessage.bind(adapter);
+    adapter.editMessage = (chatId, messageId, text) =>
+      origEdit(chatId, messageId, sanitizeOutbound(text));
 
     this.channels.set(adapter.id, adapter);
     this.log.info(`Registered channel: ${adapter.name}`);
