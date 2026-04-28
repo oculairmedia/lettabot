@@ -22,8 +22,79 @@ import type * as http from 'http';
 import { Letta } from '@letta-ai/letta-client';
 import { validateApiKey } from './auth.js';
 import { createLogger } from '../logger.js';
+import { stripEnvelope } from '../core/envelope-guard.js';
 
 const log = createLogger('ConvProxy');
+
+/**
+ * Scrub `<system-reminder>` envelopes from a stored Letta message before
+ * returning it to a REST client (e.g. the Android app).
+ *
+ * Lettabot wraps every inbound user message in a system-reminder envelope
+ * before forwarding to the agent. Letta persists that wrapped form in
+ * conversation history, so a naïve passthrough leaks the envelope back
+ * into the chat UI as a "second" user message containing the original
+ * prompt + envelope metadata. This re-render then sometimes prompts the
+ * agent again, producing a doubled assistant response.
+ *
+ * Tracking: lettabot-y4j. The bot-channel egress path is already
+ * protected by `envelope-guard` in `core/bot.ts`; this is the matching
+ * fix on the REST history path.
+ *
+ * Strategy:
+ *   - For user-role messages, strip envelopes from string content and
+ *     from any text parts inside an array `content`.
+ *   - Assistant content is left alone here: leakage in assistant text
+ *     is a separate bug class (envelope-guard should have caught it on
+ *     the way out). Logging it here would double-warn.
+ *   - If a user message becomes empty after stripping (envelope-only),
+ *     return `null` so the caller can drop it from the rendered list.
+ *
+ * Pure / synchronous / no throws — safe to call inside the SDK
+ * iteration loop.
+ */
+function scrubStoredMessage(msg: unknown): unknown | null {
+  if (!msg || typeof msg !== 'object') return msg;
+  const m = msg as { role?: string; content?: unknown };
+  if (m.role !== 'user') return msg;
+
+  // Case 1: string content
+  if (typeof m.content === 'string') {
+    const result = stripEnvelope(m.content);
+    if (result.blockMatches === 0 && result.tagMatches === 0) return msg;
+    if (result.text.length === 0) return null;
+    return { ...m, content: result.text };
+  }
+
+  // Case 2: array content (multimodal: text/image parts)
+  if (Array.isArray(m.content)) {
+    let touched = false;
+    const scrubbedParts: unknown[] = [];
+    for (const part of m.content) {
+      if (part && typeof part === 'object') {
+        const p = part as { type?: string; text?: unknown };
+        if (p.type === 'text' && typeof p.text === 'string') {
+          const result = stripEnvelope(p.text);
+          if (result.blockMatches > 0 || result.tagMatches > 0) {
+            touched = true;
+            if (result.text.length === 0) {
+              // Drop envelope-only text parts entirely.
+              continue;
+            }
+            scrubbedParts.push({ ...p, text: result.text });
+            continue;
+          }
+        }
+      }
+      scrubbedParts.push(part);
+    }
+    if (!touched) return msg;
+    if (scrubbedParts.length === 0) return null;
+    return { ...m, content: scrubbedParts };
+  }
+
+  return msg;
+}
 const LETTA_BASE_URL = process.env.LETTA_BASE_URL || 'https://api.letta.com';
 
 let cachedClient: Letta | null = null;
@@ -220,8 +291,36 @@ export async function tryHandleConversationsProxy(
         }
       }
 
-      log.debug(`GET /conversations/${conversationId}/messages count=${items.length}`);
-      sendJson(res, 200, { messages: items });
+      // Scrub any leaked system-reminder envelopes from stored user
+      // messages before responding. See scrubStoredMessage(). Counts the
+      // strip events for ops visibility — a non-zero number here means
+      // history that pre-dates this fix is still flowing through (or a
+      // brand-new wrap path is bypassing envelope-guard).
+      let scrubbed = 0;
+      let dropped = 0;
+      const cleaned: unknown[] = [];
+      for (const it of items) {
+        const out = scrubStoredMessage(it);
+        if (out === null) {
+          dropped += 1;
+          continue;
+        }
+        if (out !== it) scrubbed += 1;
+        cleaned.push(out);
+      }
+      if (scrubbed > 0 || dropped > 0) {
+        log.warn(
+          `[envelope-guard] scrubbed ${scrubbed} stored user message(s), ` +
+            `dropped ${dropped} envelope-only message(s) on GET ` +
+            `/conversations/${conversationId}/messages. See lettabot-y4j.`,
+        );
+      }
+
+      log.debug(
+        `GET /conversations/${conversationId}/messages count=${cleaned.length} ` +
+          `(scrubbed=${scrubbed} dropped=${dropped})`,
+      );
+      sendJson(res, 200, { messages: cleaned });
       return true;
     }
 

@@ -10,6 +10,10 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as http from 'http';
+import {
+  SYSTEM_REMINDER_OPEN,
+  SYSTEM_REMINDER_CLOSE,
+} from '../core/formatter.js';
 
 // Mock the Letta SDK before importing the proxy
 const mockList = vi.fn();
@@ -370,6 +374,133 @@ describe('conversations-proxy', () => {
       );
       const body = JSON.parse(captured.body);
       expect(body.messages).toHaveLength(1);
+    });
+
+    // Regression: lettabot-y4j — stored user messages carry the system-reminder
+    // envelope that lettabot wraps inbound text with. The proxy must strip it
+    // before returning, otherwise the Android app renders a "second" user
+    // bubble containing the original prompt + envelope and (worse) sometimes
+    // re-prompts the agent, producing a doubled reply.
+    describe('envelope scrubbing (lettabot-y4j)', () => {
+      const ENVELOPE = `${SYSTEM_REMINDER_OPEN}\n## Message Metadata\n- Channel: Matrix\n${SYSTEM_REMINDER_CLOSE}`;
+
+      it('strips system-reminder envelope from stored user string content', async () => {
+        mockMessagesList.mockResolvedValueOnce([
+          { id: 'msg-1', role: 'user', content: `hey\n${ENVELOPE}` },
+          { id: 'msg-2', role: 'assistant', content: 'hi there' },
+        ]);
+
+        const { res, captured } = makeRes();
+        await tryHandleConversationsProxy(
+          makeReq('GET', '/api/v1/conversations/conv-aaa/messages', {
+            'x-api-key': TEST_API_KEY,
+          }),
+          res,
+          { apiKey: TEST_API_KEY },
+        );
+
+        const body = JSON.parse(captured.body);
+        expect(body.messages).toHaveLength(2);
+        const user = body.messages[0];
+        expect(user.role).toBe('user');
+        expect(user.content).not.toContain(SYSTEM_REMINDER_OPEN);
+        expect(user.content).not.toContain(SYSTEM_REMINDER_CLOSE);
+        expect(user.content).not.toContain('## Message Metadata');
+        expect(user.content).toContain('hey');
+        // Assistant message untouched.
+        expect(body.messages[1].content).toBe('hi there');
+      });
+
+      it('drops user messages whose entire content is just an envelope', async () => {
+        mockMessagesList.mockResolvedValueOnce([
+          { id: 'msg-1', role: 'user', content: ENVELOPE },
+          { id: 'msg-2', role: 'assistant', content: 'reply' },
+        ]);
+
+        const { res, captured } = makeRes();
+        await tryHandleConversationsProxy(
+          makeReq('GET', '/api/v1/conversations/conv-aaa/messages', {
+            'x-api-key': TEST_API_KEY,
+          }),
+          res,
+          { apiKey: TEST_API_KEY },
+        );
+
+        const body = JSON.parse(captured.body);
+        expect(body.messages).toHaveLength(1);
+        expect(body.messages[0].role).toBe('assistant');
+      });
+
+      it('strips envelope from text parts in array content (multimodal)', async () => {
+        mockMessagesList.mockResolvedValueOnce([
+          {
+            id: 'msg-1',
+            role: 'user',
+            content: [
+              { type: 'text', text: `hey\n${ENVELOPE}` },
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'xxx' } },
+            ],
+          },
+        ]);
+
+        const { res, captured } = makeRes();
+        await tryHandleConversationsProxy(
+          makeReq('GET', '/api/v1/conversations/conv-aaa/messages', {
+            'x-api-key': TEST_API_KEY,
+          }),
+          res,
+          { apiKey: TEST_API_KEY },
+        );
+
+        const body = JSON.parse(captured.body);
+        expect(body.messages).toHaveLength(1);
+        const parts = body.messages[0].content;
+        expect(Array.isArray(parts)).toBe(true);
+        expect(parts).toHaveLength(2);
+        expect(parts[0].type).toBe('text');
+        expect(parts[0].text).not.toContain(SYSTEM_REMINDER_OPEN);
+        expect(parts[0].text).toContain('hey');
+        // Image part untouched.
+        expect(parts[1].type).toBe('image');
+      });
+
+      it('does NOT modify assistant messages even if they contain envelope-like text', async () => {
+        // Defensive: scrubbing assistant content here would double up with
+        // envelope-guard on the bot-channel path. Assistant text passes through.
+        mockMessagesList.mockResolvedValueOnce([
+          { id: 'msg-1', role: 'assistant', content: `assistant ${ENVELOPE} reply` },
+        ]);
+
+        const { res, captured } = makeRes();
+        await tryHandleConversationsProxy(
+          makeReq('GET', '/api/v1/conversations/conv-aaa/messages', {
+            'x-api-key': TEST_API_KEY,
+          }),
+          res,
+          { apiKey: TEST_API_KEY },
+        );
+
+        const body = JSON.parse(captured.body);
+        expect(body.messages[0].content).toContain(SYSTEM_REMINDER_OPEN);
+      });
+
+      it('passes clean user messages through unchanged', async () => {
+        mockMessagesList.mockResolvedValueOnce([
+          { id: 'msg-1', role: 'user', content: 'just a plain message' },
+        ]);
+
+        const { res, captured } = makeRes();
+        await tryHandleConversationsProxy(
+          makeReq('GET', '/api/v1/conversations/conv-aaa/messages', {
+            'x-api-key': TEST_API_KEY,
+          }),
+          res,
+          { apiKey: TEST_API_KEY },
+        );
+
+        const body = JSON.parse(captured.body);
+        expect(body.messages[0].content).toBe('just a plain message');
+      });
     });
 
     it('handles SDK returning async iterable', async () => {
