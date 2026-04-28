@@ -21,6 +21,7 @@ import {
 } from './openai-compat.js';
 import type { OpenAIChatRequest } from './openai-compat.js';
 import { getTurnViewerHtml } from '../core/turn-viewer.js';
+import { tryHandleConversationsProxy } from './conversations-proxy.js';
 
 import { createLogger } from '../logger.js';
 
@@ -935,6 +936,16 @@ export function createApiServer(deliverer: AgentRouter, options: ServerOptions):
         sendError(res, 500, error.message || 'Internal server error');
       }
       return;
+    }
+
+    // Route: /api/v1/conversations[/:id[/messages]] - Letta conversations proxy.
+    // Handles requests carrying agent_id query (collection) or a conv-* path
+    // segment (resource). Legacy ?agent=<botName> requests fall through to
+    // the handler below.
+    // Part of letta-mobile-w2hx (Letta-native multi-agent transport).
+    if (req.url?.startsWith('/api/v1/conversations')) {
+      const handled = await tryHandleConversationsProxy(req, res, { apiKey: options.apiKey });
+      if (handled) return;
     }
 
     // Route: GET /api/v1/conversations - List conversations from Letta API
