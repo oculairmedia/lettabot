@@ -22,14 +22,33 @@ import {
   type StreamFrame,
 } from './bot-stream-coalescer.js';
 import { PartialJsonSnapshotEmitter } from './partial-json-snapshot-emitter.js';
+import {
+  ConversationAgentResolver,
+  getSharedResolver,
+} from './conversation-agent-resolver.js';
 
 const log = createLogger('WsGateway');
 
 // --- Wire protocol types ---
 
+/**
+ * `session_start` opens (or resumes) a Letta SDK session for the lifetime of
+ * the WS connection.
+ *
+ * Protocol v2 (letta-mobile-w2hx.2): a frame may carry **either**
+ *   - `agent_id`                          (legacy / "fresh" path)
+ *   - `conversation_id` only              (server resolves agent_id via the
+ *                                          ConversationAgentResolver)
+ *   - both                                (back-compat — server prefers
+ *                                          conversation_id and validates that
+ *                                          the resolved agent_id matches)
+ *
+ * `force_new` is retained for now (w2hx.7 will remove it on the Android side
+ * once "freshness" is expressed by minting a new conversation upstream).
+ */
 interface SessionStartMsg {
   type: 'session_start';
-  agent_id: string;
+  agent_id?: string;
   conversation_id?: string;
   force_new?: boolean;
 }
@@ -38,6 +57,14 @@ interface ClientMessage {
   type: 'message';
   content: string;
   request_id?: string;
+  /**
+   * Protocol v2 (letta-mobile-w2hx.2): when set, the server validates that
+   * this matches the active session's conversation_id. A mismatch is a hard
+   * error — the client should `session_start` with the correct conversation
+   * first. Future work (w2hx.3) will use this to demux across a per-agent
+   * pool without requiring a `session_start` round-trip on every switch.
+   */
+  conversation_id?: string;
   /** Optional originating channel metadata (e.g., from Matrix bridge) */
   source?: {
     channel: string;
@@ -72,6 +99,18 @@ const ErrorCode = {
   STREAM_ERROR: 'STREAM_ERROR',
 } as const;
 
+/**
+ * Application-defined WebSocket close codes (4000-4999 range, per RFC 6455).
+ * Clients can use these to choose retry behavior — e.g. retry immediately on
+ * SERVER_SHUTDOWN, back off on IDLE_TIMEOUT, treat DEAD_CONNECTION as a
+ * transient network blip.
+ */
+const CloseCode = {
+  SERVER_SHUTDOWN: 4000,
+  DEAD_CONNECTION: 4001,
+  IDLE_TIMEOUT: 4003,
+} as const;
+
 // --- Gateway ---
 
 export interface WsGatewayOptions {
@@ -79,7 +118,19 @@ export interface WsGatewayOptions {
   path?: string;
   maxConnections?: number;
   pingIntervalMs?: number;
+  /**
+   * Time a connection may sit open without sending `session_start` before
+   * the gateway closes it with `IDLE_TIMEOUT`. Defaults to 30s. Set very
+   * small values in tests; set 0 to disable.
+   */
+  idleTimeoutMs?: number;
   sessionManager?: AgentSessionManager;
+  /**
+   * conv_id → agent_id resolver used by protocol v2 `session_start` frames
+   * that carry only `conversation_id`. Defaults to the process-wide shared
+   * resolver. Tests can inject a stub.
+   */
+  conversationResolver?: ConversationAgentResolver;
   onSourceUpdate?: (source: { channel: string; chatId: string }) => void;
   onConversationUpdate?: (agentId: string, conversationId: string) => void;
 }
@@ -87,6 +138,7 @@ export interface WsGatewayOptions {
 const WS_PATH = '/api/v1/agent-gateway';
 const MAX_CONNECTIONS = 100;
 const PING_INTERVAL_MS = 30_000;
+const IDLE_TIMEOUT_MS = 30_000;
 
 /**
  * Resolve the stream coalescer config from env. **Enabled by default** as of
@@ -152,27 +204,48 @@ export class WsGateway {
   private connectionIds = new Map<WebSocket, string>();
   /** Per-connection coalescer; absent when LETTABOT_COALESCE_ENABLED is off. */
   private coalescers = new Map<WebSocket, BotStreamCoalescer>();
+  /**
+   * Per-connection state — capability flags, liveness, idle timer.
+   * `progressiveToolCalls` is opt-in via `?progressive_tool_calls=1` and
+   * gates whether `tool_call` `status='running'` snapshots reach the wire
+   * (see docs/channel-adapter-contract.md).
+   * `isAlive` flips false on each ping cycle and back to true on pong;
+   * connections that miss a cycle get reaped (lettabot-wsh.1).
+   * `idleTimer` fires `IDLE_TIMEOUT` close if `session_start` never arrives.
+   */
+  private connectionState = new Map<
+    WebSocket,
+    {
+      progressiveToolCalls: boolean;
+      isAlive: boolean;
+      idleTimer: ReturnType<typeof setTimeout> | null;
+    }
+  >();
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private readonly apiKey: string;
   private readonly path: string;
   private readonly maxConnections: number;
+  private readonly idleTimeoutMs: number;
   private readonly onSourceUpdate?: (source: { channel: string; chatId: string }) => void;
   private readonly coalesceConfig: { enabled: boolean; windowMs: number };
   private readonly partialJsonConfig: { enabled: boolean };
+  private readonly conversationResolver: ConversationAgentResolver;
 
   constructor(options: WsGatewayOptions) {
     this.apiKey = options.apiKey;
     this.path = options.path ?? WS_PATH;
     this.maxConnections = options.maxConnections ?? MAX_CONNECTIONS;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
     this.sessions = options.sessionManager ?? new AgentSessionManager({
       onConversationUpdate: options.onConversationUpdate,
     });
     this.onSourceUpdate = options.onSourceUpdate;
     this.coalesceConfig = readCoalesceConfig();
     this.partialJsonConfig = readPartialJsonConfig();
+    this.conversationResolver = options.conversationResolver ?? getSharedResolver();
 
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
-    this.wss.on('connection', (ws) => this.onConnection(ws));
+    this.wss.on('connection', (ws, req) => this.onConnection(ws, req));
 
     const pingMs = options.pingIntervalMs ?? PING_INTERVAL_MS;
     this.pingTimer = setInterval(() => this.pingAll(), pingMs);
@@ -225,8 +298,20 @@ export class WsGateway {
       coalescer.dispose();
     }
     this.coalescers.clear();
+    // Clear any pending idle timers before sending close frames.
+    for (const state of this.connectionState.values()) {
+      if (state.idleTimer) clearTimeout(state.idleTimer);
+    }
+    this.connectionState.clear();
+    // Send a graceful close frame with SERVER_SHUTDOWN so clients can
+    // distinguish "the server is restarting" from "you got booted" and
+    // pick the right reconnect strategy.
     for (const ws of this.wss.clients) {
-      ws.terminate();
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close(CloseCode.SERVER_SHUTDOWN, 'gateway shutting down');
+      } else {
+        ws.terminate();
+      }
     }
     this.wss.close();
   }
@@ -265,9 +350,36 @@ export class WsGateway {
 
   // --- connection handling ---
 
-  private onConnection(ws: WebSocket): void {
+  private onConnection(ws: WebSocket, req: IncomingMessage): void {
     const connId = crypto.randomUUID();
     this.connectionIds.set(ws, connId);
+
+    // Per-connection capability negotiation. Currently the only flag is
+    // progressive_tool_calls; default is off so naive adapters see exactly
+    // one tool_call per id without needing dedup logic.
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    const progressiveToolCalls = url.searchParams.get('progressive_tool_calls') === '1';
+
+    // Idle reaper: a client that opens a socket but never sends
+    // session_start gets closed with IDLE_TIMEOUT. Keeps stalled or
+    // hostile clients from holding ports indefinitely. Cleared on the
+    // first session_start (handleSessionStart) and on close.
+    const idleTimer =
+      this.idleTimeoutMs > 0
+        ? setTimeout(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              log.info(`Idle timeout (no session_start): ${connId.slice(0, 8)}`);
+              ws.close(CloseCode.IDLE_TIMEOUT, 'no session_start within idle window');
+            }
+          }, this.idleTimeoutMs)
+        : null;
+    idleTimer?.unref?.();
+
+    this.connectionState.set(ws, {
+      progressiveToolCalls,
+      isAlive: true,
+      idleTimer,
+    });
 
     if (this.coalesceConfig.enabled) {
       this.coalescers.set(
@@ -279,7 +391,10 @@ export class WsGateway {
       );
     }
 
-    log.info(`Connection opened: ${connId.slice(0, 8)}...`);
+    log.info(
+      `Connection opened: ${connId.slice(0, 8)}...` +
+        (progressiveToolCalls ? ' (progressive_tool_calls=1)' : ''),
+    );
 
     ws.on('message', (data) => {
       this.onMessage(ws, connId, data).catch((err) => {
@@ -291,6 +406,9 @@ export class WsGateway {
     ws.on('close', () => {
       log.info(`Connection closed: ${connId.slice(0, 8)}...`);
       this.connectionIds.delete(ws);
+      const state = this.connectionState.get(ws);
+      if (state?.idleTimer) clearTimeout(state.idleTimer);
+      this.connectionState.delete(ws);
       const coalescer = this.coalescers.get(ws);
       if (coalescer) {
         coalescer.dispose();
@@ -303,8 +421,12 @@ export class WsGateway {
       log.error(`WS error on ${connId.slice(0, 8)}:`, err.message);
     });
 
+    // Liveness: the ping/pong reaper in pingAll() flips isAlive=false
+    // before each ping; a pong here flips it back. Connections that
+    // miss a cycle are terminated with DEAD_CONNECTION on the next tick.
     ws.on('pong', () => {
-      // Connection is alive — lastActivity tracked by session manager
+      const state = this.connectionState.get(ws);
+      if (state) state.isAlive = true;
     });
   }
 
@@ -354,13 +476,94 @@ export class WsGateway {
   }
 
   private async handleSessionStart(ws: WebSocket, connId: string, msg: SessionStartMsg): Promise<void> {
-    if (!msg.agent_id) {
-      this.sendError(ws, ErrorCode.BAD_MESSAGE, 'Missing agent_id');
+    // The connection is now in active use — cancel the idle reaper.
+    // We do this before the agent_id check so that even a malformed
+    // session_start frame counts as "client is active" and won't trip
+    // the idle timeout on the very next tick.
+    const state = this.connectionState.get(ws);
+    if (state?.idleTimer) {
+      clearTimeout(state.idleTimer);
+      state.idleTimer = null;
+    }
+
+    // Reject session_start while a stream is in flight (lettabot-wsh.2).
+    // The per-connId mutex in AgentSessionManager would queue us behind
+    // the stream anyway, but a stream can run for tens of seconds — far
+    // longer than is reasonable to silently block a client switch. Tell
+    // the client to abort first instead.
+    const info = this.sessions.getInfo(connId);
+    if (info && info.state === 'busy') {
+      this.sendError(
+        ws,
+        ErrorCode.SESSION_BUSY,
+        'Cannot session_start while a message is streaming. Send abort first.',
+      );
       return;
     }
 
+    // Protocol v2 (letta-mobile-w2hx.2): one of agent_id or conversation_id
+    // must be present. If only conversation_id is supplied, resolve agent_id
+    // via the shared ConversationAgentResolver. If both are supplied, prefer
+    // conversation_id and validate that the resolved agent_id matches the
+    // declared one (back-compat sanity check).
+    let agentId = msg.agent_id;
+    if (!agentId && !msg.conversation_id) {
+      this.sendError(
+        ws,
+        ErrorCode.BAD_MESSAGE,
+        'Missing agent_id and conversation_id (provide at least one)',
+      );
+      return;
+    }
+
+    if (!agentId && msg.conversation_id) {
+      try {
+        const resolved = await this.conversationResolver.resolve(msg.conversation_id);
+        if (!resolved) {
+          this.sendError(
+            ws,
+            ErrorCode.BAD_MESSAGE,
+            `conversation_id ${msg.conversation_id} not found`,
+          );
+          return;
+        }
+        agentId = resolved;
+      } catch (err) {
+        this.sendError(
+          ws,
+          ErrorCode.SESSION_INIT_FAILED,
+          `Failed to resolve conversation: ${String((err as Error).message ?? err)}`,
+        );
+        return;
+      }
+    } else if (msg.agent_id && msg.conversation_id) {
+      // Both supplied — validate. A mismatch is a hard error: the client is
+      // out of sync with Letta and silently re-routing would be a bug factory.
+      try {
+        const resolved = await this.conversationResolver.resolve(msg.conversation_id);
+        if (resolved && resolved !== msg.agent_id) {
+          this.sendError(
+            ws,
+            ErrorCode.BAD_MESSAGE,
+            `conversation_id ${msg.conversation_id} belongs to agent ${resolved}, not ${msg.agent_id}`,
+          );
+          return;
+        }
+        // resolved === null → not found yet; let session.open create it.
+      } catch {
+        // Resolver transport errors are non-fatal here — fall through and let
+        // the SDK's own validation surface the problem.
+      }
+    }
+
     try {
-      const init = await this.sessions.open(connId, msg.agent_id, msg.conversation_id, msg.force_new);
+      const init = await this.sessions.open(connId, agentId!, msg.conversation_id, msg.force_new);
+      // Prime the resolver so subsequent frames hit the cache without a Letta
+      // round-trip. Cheap and defensive against the cold-start window where a
+      // freshly-created conv hasn't been queried yet.
+      if (init.conversationId) {
+        this.conversationResolver.prime(init.conversationId, init.agentId);
+      }
       this.send(ws, {
         type: 'session_init',
         agent_id: init.agentId,
@@ -415,6 +618,26 @@ export class WsGateway {
       return;
     }
 
+    // Protocol v2 (letta-mobile-w2hx.2): if the client tags this frame with a
+    // conversation_id, it MUST match the active session's conversation. A
+    // mismatch means the client and server have drifted (e.g. multi-agent
+    // chat picker race) — refuse rather than silently route to the wrong
+    // agent. The eventual w2hx.3 / .8 work will demux across a per-agent
+    // pool so this becomes a routing primitive rather than a check.
+    if (msg.conversation_id) {
+      const info = this.sessions.getInfo(connId);
+      const activeConvId = info?.conversationId;
+      if (activeConvId && activeConvId !== msg.conversation_id) {
+        this.sendError(
+          ws,
+          ErrorCode.BAD_MESSAGE,
+          `conversation_id ${msg.conversation_id} does not match active session ${activeConvId}`,
+          msg.request_id,
+        );
+        return;
+      }
+    }
+
     if (msg.source?.channel && msg.source?.chatId && this.onSourceUpdate) {
       this.onSourceUpdate(msg.source);
     }
@@ -445,9 +668,19 @@ export class WsGateway {
       // boundary (status='completed'). The emitter encapsulates the
       // per-id buffer + parser + dedupe; see partial-json-snapshot-emitter.ts.
       const partialJsonEnabled = this.partialJsonConfig.enabled;
+      const progressiveToolCalls =
+        this.connectionState.get(ws)?.progressiveToolCalls ?? false;
       const snapshotEmitter = partialJsonEnabled
         ? new PartialJsonSnapshotEmitter({
             onSnapshot: (emission) => {
+              // Per-connection capability gate: clients that did not opt
+              // into progressive snapshots only receive the terminal
+              // `completed` emission. Running snapshots are dropped here
+              // so the wire shows exactly one tool_call frame per id.
+              // See docs/channel-adapter-contract.md §4 for the wire
+              // contract behind the `?progressive_tool_calls=1` opt-in.
+              if (emission.status === 'running' && !progressiveToolCalls) return;
+
               const pending = pendingToolCalls.get(emission.id);
               if (!pending) return; // race: cleared mid-flight
               const enriched = buildToolCallMessage(
@@ -546,8 +779,11 @@ export class WsGateway {
       const bufferedEvents: Array<{ content: string; uuid?: string }> = [];
 
       const flushAssistantBuffer = () => {
+        // Re-read conversation_id at flush time — recovery may have swapped
+        // it between the buffer-push and the flush. (lettabot-flk.5)
+        const convId = this.sessions.getInfo(connId)?.conversationId ?? null;
         for (const ev of bufferedEvents) {
-          this.sendStream(ws, { type: 'stream', event: 'assistant', content: ev.content, uuid: ev.uuid, request_id: msg.request_id });
+          this.sendStream(ws, { type: 'stream', event: 'assistant', content: ev.content, uuid: ev.uuid, conversation_id: convId, request_id: msg.request_id });
         }
         bufferedEvents.length = 0;
       };
@@ -605,7 +841,8 @@ export class WsGateway {
           } else {
             // Definitely not <no-reply/> — flush everything we held back, then forward normally
             flushAssistantBuffer();
-            this.sendStream(ws, { type: 'stream', event: 'assistant', content: event.content, uuid: event.uuid, request_id: msg.request_id });
+            const convId = this.sessions.getInfo(connId)?.conversationId ?? null;
+            this.sendStream(ws, { type: 'stream', event: 'assistant', content: event.content, uuid: event.uuid, conversation_id: convId, request_id: msg.request_id });
           }
         } else {
           // Non-assistant events flush the buffer (tool calls break the no-reply pattern)
@@ -669,10 +906,36 @@ export class WsGateway {
     /** Partial-JSON tool_call status. Wire-additive; undefined for legacy single-emit path. */
     toolCallStatus?: 'running' | 'completed',
   ): void {
+    // Pull conversation_id once per outbound frame. Looked up just-in-time
+    // because the recovery path in AgentSessionManager can swap the
+    // underlying conversation mid-stream, and we want every frame after
+    // that point tagged with the new id. (lettabot-flk.5)
+    const conversationId = this.sessions.getInfo(connId)?.conversationId ?? null;
+
+    // Synthetic conversation_swap from the manager's recovery path —
+    // wire-additive event that lets the client re-anchor its timeline
+    // observer before retry events stream in.
+    const synthType = (msg as unknown as { type?: string }).type;
+    if (synthType === 'conversation_swap') {
+      const swap = msg as unknown as {
+        oldConversationId: string | null;
+        newConversationId: string;
+      };
+      this.sendStream(ws, {
+        type: 'stream',
+        event: 'conversation_swap',
+        old_conversation_id: swap.oldConversationId,
+        new_conversation_id: swap.newConversationId,
+        conversation_id: swap.newConversationId,
+        request_id: requestId,
+      });
+      return;
+    }
+
     switch (msg.type) {
       case 'assistant':
         if (this.isInternalMessage(msg.content)) break;
-        this.sendStream(ws, { type: 'stream', event: 'assistant', content: msg.content, uuid: msg.uuid, request_id: requestId });
+        this.sendStream(ws, { type: 'stream', event: 'assistant', content: msg.content, uuid: msg.uuid, conversation_id: conversationId, request_id: requestId });
         break;
       case 'tool_call': {
         // Include toolInput so clients can display tool call details
@@ -684,6 +947,7 @@ export class WsGateway {
           tool_call_id: msg.toolCallId,
           tool_input: toolInput,
           uuid: msg.uuid,
+          conversation_id: conversationId,
           request_id: requestId,
         };
         if (toolCallStatus) frame.status = toolCallStatus;
@@ -692,21 +956,20 @@ export class WsGateway {
       }
       case 'tool_result': {
         const resolvedToolName = (msg.toolCallId && toolNameMap?.get(msg.toolCallId)) ?? null;
-        this.sendStream(ws, { type: 'stream', event: 'tool_result', content: msg.content, tool_call_id: msg.toolCallId, tool_name: resolvedToolName, is_error: msg.isError, uuid: msg.uuid, request_id: requestId });
+        this.sendStream(ws, { type: 'stream', event: 'tool_result', content: msg.content, tool_call_id: msg.toolCallId, tool_name: resolvedToolName, is_error: msg.isError, uuid: msg.uuid, conversation_id: conversationId, request_id: requestId });
         break;
       }
       case 'reasoning':
-        this.sendStream(ws, { type: 'stream', event: 'reasoning', content: msg.content, uuid: msg.uuid, request_id: requestId });
+        this.sendStream(ws, { type: 'stream', event: 'reasoning', content: msg.content, uuid: msg.uuid, conversation_id: conversationId, request_id: requestId });
         break;
       case 'result': {
-        const info = this.sessions.getInfo(connId);
         // Route through coalescer so any pending text drains before the
         // terminal frame.  The coalescer recognizes type !== 'stream' as
         // pass-through-with-flush.
         this.sendStream(ws, {
           type: 'result',
           success: msg.success,
-          conversation_id: msg.conversationId ?? info?.conversationId ?? null,
+          conversation_id: msg.conversationId ?? conversationId,
           request_id: requestId,
           duration_ms: msg.durationMs,
           ...(msg.error ? { error: msg.error } : {}),
@@ -769,11 +1032,33 @@ export class WsGateway {
     }
   }
 
+  /**
+   * Heartbeat reaper. Each cycle:
+   *   1. Connections that didn't pong since the last cycle are dead;
+   *      terminate them (TCP RST) so connectionCount stays accurate
+   *      and resources are released. Without this, silently-dead
+   *      connections (client crashed, NAT timed out) sit around until
+   *      OS-level TCP keepalive kicks in (hours, by default).
+   *   2. Surviving connections get isAlive=false + a ping. The pong
+   *      handler flips isAlive back to true; if it doesn't, step 1
+   *      reaps them next cycle.
+   */
   private pingAll(): void {
     for (const ws of this.wss.clients) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.ping();
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      const state = this.connectionState.get(ws);
+      if (state && state.isAlive === false) {
+        const connId = this.connectionIds.get(ws);
+        log.warn(`Reaping dead connection (no pong): ${connId?.slice(0, 8) ?? '?'}`);
+        // close() with code first (sends close frame to anything still
+        // listening on the socket), then terminate to reclaim resources
+        // immediately rather than waiting for the close handshake.
+        ws.close(CloseCode.DEAD_CONNECTION, 'no pong response');
+        ws.terminate();
+        continue;
       }
+      if (state) state.isAlive = false;
+      ws.ping();
     }
   }
 }
