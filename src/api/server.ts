@@ -7,6 +7,8 @@ import * as http from 'http';
 import * as fs from 'fs';
 import { readFile } from 'node:fs/promises';
 import * as crypto from 'node:crypto';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { validateApiKey } from './auth.js';
 import type { SendMessageResponse, ChatRequest, ChatResponse, AsyncChatResponse, PairingListResponse, PairingApproveRequest, PairingApproveResponse } from './types.js';
 import { listPairingRequests, approvePairingCode } from '../pairing/store.js';
@@ -21,6 +23,7 @@ import {
 } from './openai-compat.js';
 import type { OpenAIChatRequest } from './openai-compat.js';
 import { getTurnViewerHtml } from '../core/turn-viewer.js';
+import { tryHandleConversationsProxy } from './conversations-proxy.js';
 
 import { createLogger } from '../logger.js';
 
@@ -31,6 +34,7 @@ const MAX_TEXT_LENGTH = 10000; // 10k chars
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const WEBHOOK_CONTEXT = { type: 'webhook' as const, outputMode: 'silent' as const };
 const PORTAL_HTML = fs.readFileSync(new URL('./portal.html', import.meta.url), 'utf-8');
+const MAX_FILESYSTEM_BROWSE_ENTRIES = 500;
 
 type ResolvedChatRequest = {
   message: string;
@@ -51,6 +55,7 @@ interface ServerOptions {
   stores?: Map<string, Store>; // Agent stores for management endpoints
   agentChannels?: Map<string, string[]>; // Channel IDs per agent name
   agentConversationModes?: Map<string, string>; // agentName -> conversationMode (shared|per-channel|per-chat|disabled)
+  gatewayAgentDetails?: () => Array<Record<string, unknown>>; // Client-mode WS gateway agent cwd/status metadata
   sessionInvalidators?: Map<string, (key?: string) => void>; // Invalidate live sessions after store writes
   upgradeHandlers?: UpgradeHandler[];
   heartbeatTriggers?: Map<string, () => Promise<void>>; // agentName -> trigger fn
@@ -742,6 +747,7 @@ export function createApiServer(deliverer: AgentRouter, options: ServerOptions):
           return;
         }
         const agents: Record<string, any> = {};
+        const agentDetails: Array<Record<string, unknown>> = [];
         if (options.stores) {
           for (const [name, store] of options.stores) {
             const info = store.getInfo();
@@ -754,15 +760,59 @@ export function createApiServer(deliverer: AgentRouter, options: ServerOptions):
               createdAt: info.createdAt,
               lastUsedAt: info.lastUsedAt,
             };
+            if (info.agentId) {
+              agentDetails.push({
+                id: info.agentId,
+                name,
+                status: 'ready',
+              });
+            }
           }
         }
+        for (const detail of options.gatewayAgentDetails?.() ?? []) {
+          const id = typeof detail.id === 'string' ? detail.id : undefined;
+          const existing = id
+            ? agentDetails.find(agentDetail => agentDetail.id === id)
+            : undefined;
+          if (existing) {
+            Object.assign(existing, {
+              ...detail,
+              name: typeof existing.name === 'string' ? existing.name : detail.name,
+              status: detail.status ?? existing.status,
+            });
+            continue;
+          }
+          agentDetails.push(detail);
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ agents }));
+        res.end(JSON.stringify({ agents, agent_details: agentDetails }));
       } catch (error: any) {
         log.error('Status error:', error);
         sendError(res, 500, error.message || 'Internal server error');
       }
       return;
+    }
+
+    // Route: GET /api/v1/filesystem/browse - Authenticated server-side directory picker data
+    if (req.method === 'GET') {
+      const parsedUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+      if (parsedUrl.pathname === '/api/v1/filesystem/browse') {
+        try {
+          if (!validateApiKey(req.headers, options.apiKey)) {
+            sendError(res, 401, 'Unauthorized');
+            return;
+          }
+          const requestedPath = parsedUrl.searchParams.get('path') ?? undefined;
+          const limit = parsePositiveInt(parsedUrl.searchParams.get('limit'), MAX_FILESYSTEM_BROWSE_ENTRIES);
+          const listing = await browseServerDirectory(requestedPath, Math.min(limit, MAX_FILESYSTEM_BROWSE_ENTRIES));
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify(listing));
+        } catch (error: any) {
+          log.warn('Filesystem browse error:', error);
+          sendError(res, filesystemBrowseStatus(error), error.message || 'Unable to browse filesystem');
+        }
+        return;
+      }
     }
 
     // Route: POST /api/v1/heartbeat - Trigger heartbeat for an agent
@@ -935,6 +985,16 @@ export function createApiServer(deliverer: AgentRouter, options: ServerOptions):
         sendError(res, 500, error.message || 'Internal server error');
       }
       return;
+    }
+
+    // Route: /api/v1/conversations[/:id[/messages]] - Letta conversations proxy.
+    // Handles requests carrying agent_id query (collection) or a conv-* path
+    // segment (resource). Legacy ?agent=<botName> requests fall through to
+    // the handler below.
+    // Part of letta-mobile-w2hx (Letta-native multi-agent transport).
+    if (req.url?.startsWith('/api/v1/conversations')) {
+      const handled = await tryHandleConversationsProxy(req, res, { apiKey: options.apiKey });
+      if (handled) return;
     }
 
     // Route: GET /api/v1/conversations - List conversations from Letta API
@@ -1183,6 +1243,85 @@ function getPortalMode(options: ServerOptions): string {
   if (values.every(m => m === 'disabled')) return 'disabled';
   if (values.every(m => m === 'shared')) return 'shared';
   return values.find(m => m !== 'shared') ?? 'shared';
+}
+
+function parsePositiveInt(value: string | null, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function browseServerDirectory(requestedPath: string | undefined, limit: number): Promise<{
+  path: string;
+  parent: string | null;
+  entries: Array<{
+    name: string;
+    path: string;
+    type: 'directory';
+    isSymlink: boolean;
+  }>;
+  truncated: boolean;
+}> {
+  const expandedPath = expandServerPath(requestedPath?.trim() || process.cwd());
+  const resolvedPath = path.resolve(expandedPath);
+  const stat = await fs.promises.stat(resolvedPath);
+  if (!stat.isDirectory()) {
+    throw Object.assign(new Error(`Path is not a directory: ${resolvedPath}`), { statusCode: 400 });
+  }
+
+  const dirents = await fs.promises.readdir(resolvedPath, { withFileTypes: true });
+  const entries: Array<{ name: string; path: string; type: 'directory'; isSymlink: boolean }> = [];
+  let scanned = 0;
+
+  for (const dirent of dirents.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))) {
+    if (entries.length >= limit) break;
+    scanned += 1;
+    if (dirent.name === '.' || dirent.name === '..') continue;
+    const childPath = path.join(resolvedPath, dirent.name);
+    const isDirectory = dirent.isDirectory() || (dirent.isSymbolicLink() && await isDirectorySymlink(childPath));
+    if (!isDirectory) continue;
+    entries.push({
+      name: dirent.name,
+      path: childPath,
+      type: 'directory',
+      isSymlink: dirent.isSymbolicLink(),
+    });
+  }
+
+  const parent = path.dirname(resolvedPath);
+  return {
+    path: resolvedPath,
+    parent: parent === resolvedPath ? null : parent,
+    entries,
+    truncated: scanned < dirents.length || entries.length >= limit,
+  };
+}
+
+function expandServerPath(value: string): string {
+  if (value === '~') return os.homedir();
+  if (value.startsWith(`~${path.sep}`)) return path.join(os.homedir(), value.slice(2));
+  return value;
+}
+
+async function isDirectorySymlink(value: string): Promise<boolean> {
+  try {
+    return (await fs.promises.stat(value)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function filesystemBrowseStatus(error: unknown): number {
+  const statusCode = typeof error === 'object' && error !== null && 'statusCode' in error
+    ? Number((error as { statusCode?: unknown }).statusCode)
+    : undefined;
+  if (statusCode && statusCode >= 400 && statusCode < 600) return statusCode;
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+  if (code === 'ENOENT') return 404;
+  if (code === 'EACCES' || code === 'EPERM') return 403;
+  return 500;
 }
 
 function ensureAuthorized(req: http.IncomingMessage, res: http.ServerResponse, apiKey: string): boolean {

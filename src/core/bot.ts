@@ -22,6 +22,8 @@ import { formatMessageEnvelope, formatGroupBatchEnvelope, type SessionContextOpt
 import type { GroupBatcher } from './group-batcher.js';
 import { recoverPendingApprovalsWithSdk } from './session-sdk-compat.js';
 import { redactOutbound } from './redact.js';
+import { guardOutbound } from './envelope-guard.js';
+import { OutboundObserver } from './outbound-observer.js';
 import {
   hasIncompleteActionsTag,
   hasUnclosedActionsBlock,
@@ -299,6 +301,14 @@ export class LettaBot implements AgentSession {
   private readonly log: Logger;
   private config: BotConfig;
   private channels: Map<string, ChannelAdapter> = new Map();
+  // lettabot-y4j: observes every wrapped sendMessage/editMessage call so
+  // doubled-message regressions self-fingerprint in the logs.
+  private readonly outboundObserver: OutboundObserver;
+  /** @internal Test-only accessor. Not part of the stable API. */
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  public get __outboundObserverForTest(): OutboundObserver {
+    return this.outboundObserver;
+  }
   private messageQueue: Array<{ msg: InboundMessage; adapter: ChannelAdapter }> = [];
   private lastUserMessageTime: Date | null = null;
   
@@ -346,6 +356,10 @@ export class LettaBot implements AgentSession {
       this.conversationOverrides = new Set(config.conversationOverrides.map((ch) => ch.toLowerCase()));
     }
     this.sessionManager = new SessionManager(this.store, config, this.processingKeys, this.lastResultRunFingerprints);
+    this.outboundObserver = new OutboundObserver({
+      logInfo: (line) => this.log.info(line),
+      logWarn: (line) => this.log.warn(line),
+    });
     this.log.info(`LettaBot initialized. Agent ID: ${this.store.agentId || '(new)'}`);
   }
 
@@ -910,17 +924,52 @@ export class LettaBot implements AgentSession {
     adapter.onMessage = (msg) => this.handleMessage(msg, adapter);
     adapter.onCommand = (cmd, chatId, args, forcePerChat) => this.handleCommand(cmd, adapter.id, chatId, args, forcePerChat);
 
-    // Wrap outbound methods when any redaction layer is active.
-    // Secrets are enabled by default unless explicitly disabled.
+    // Wrap outbound methods. Two layers compose here, redaction-then-
+    // envelope-guard, both applied unconditionally on the guard side
+    // (the guard is a no-op when no envelope marker is present, so
+    // it's free for the common path) and conditionally on the
+    // redaction side (secrets default-on, PII default-off).
+    //
+    // Order matters: redaction first so secret values inside an
+    // envelope are still redacted *before* the envelope strip removes
+    // the surrounding tag — defense-in-depth in case the guard regex
+    // ever misses a malformed envelope.
     const redactionConfig = this.config.redaction;
     const shouldRedact = redactionConfig?.secrets !== false || redactionConfig?.pii === true;
-    if (shouldRedact) {
-      const origSend = adapter.sendMessage.bind(adapter);
-      adapter.sendMessage = (msg) => origSend({ ...msg, text: redactOutbound(msg.text, redactionConfig) });
 
-      const origEdit = adapter.editMessage.bind(adapter);
-      adapter.editMessage = (chatId, messageId, text) => origEdit(chatId, messageId, redactOutbound(text, redactionConfig));
-    }
+    const log = this.log;
+    const sanitizeOutbound = (text: string): string => {
+      const redacted = shouldRedact ? redactOutbound(text, redactionConfig) : text;
+      // lettabot-y4j: defensive strip of leaked <system-reminder>
+      // envelopes that should never reach end users.
+      return guardOutbound(redacted, (warn) => log.warn(warn));
+    };
+
+    // lettabot-y4j: observe every outbound call at the last common
+    // boundary so doubled-message regressions self-fingerprint in the
+    // logs (structured info line per send + warn on near-duplicate).
+    const observer = this.outboundObserver;
+    const channelId = adapter.id;
+
+    const origSend = adapter.sendMessage.bind(adapter);
+    adapter.sendMessage = (msg) => {
+      const text = sanitizeOutbound(msg.text);
+      observer.observe({ channel: channelId, chatId: msg.chatId, text, kind: 'send' });
+      return origSend({ ...msg, text });
+    };
+
+    const origEdit = adapter.editMessage.bind(adapter);
+    adapter.editMessage = (chatId, messageId, text) => {
+      const sanitized = sanitizeOutbound(text);
+      observer.observe({
+        channel: channelId,
+        chatId,
+        text: sanitized,
+        kind: 'edit',
+        editMessageId: messageId,
+      });
+      return origEdit(chatId, messageId, sanitized);
+    };
 
     this.channels.set(adapter.id, adapter);
     this.log.info(`Registered channel: ${adapter.name}`);

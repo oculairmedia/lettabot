@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import * as http from 'http';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createApiServer } from './server.js';
 import type { AgentRouter } from '../core/interfaces.js';
 
@@ -379,6 +382,116 @@ describe('POST /api/v1/heartbeat (no triggers configured)', () => {
     });
     expect(res.status).toBe(404);
     expect(JSON.parse(res.body).error).toContain('No heartbeat services configured');
+  });
+});
+
+describe('GET /api/v1/status', () => {
+  let server: http.Server;
+  let port: number;
+
+  beforeAll(async () => {
+    server = createApiServer(createMockRouter(), {
+      port: TEST_PORT,
+      apiKey: TEST_API_KEY,
+      host: '127.0.0.1',
+      stores: new Map([
+        ['LettaBot', {
+          getInfo: () => ({
+            agentId: 'agent-1',
+            conversationId: 'conv-store',
+            conversations: {},
+            baseUrl: 'http://localhost:8283',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastUsedAt: '2026-01-01T00:00:00.000Z',
+          }),
+        } as any],
+      ]),
+      gatewayAgentDetails: () => [{
+        id: 'agent-1',
+        name: 'agent-1',
+        status: 'tracked',
+        conversation_id: 'conv-gateway',
+        default_working_directory: '/tmp/lettabot',
+      }],
+    });
+    await new Promise<void>((resolve) => {
+      if (server.listening) { resolve(); return; }
+      server.once('listening', resolve);
+    });
+    port = getPort(server);
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it('merges gateway location metadata into store-backed agent details', async () => {
+    const res = await request(port, 'GET', '/api/v1/status');
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.agent_details).toHaveLength(1);
+    expect(body.agent_details[0]).toMatchObject({
+      id: 'agent-1',
+      name: 'LettaBot',
+      default_working_directory: '/tmp/lettabot',
+      conversation_id: 'conv-gateway',
+    });
+  });
+});
+
+describe('GET /api/v1/filesystem/browse', () => {
+  let server: http.Server;
+  let port: number;
+  let tempDir: string;
+
+  beforeAll(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'lettabot-fs-browse-'));
+    await mkdir(join(tempDir, 'alpha'));
+    await mkdir(join(tempDir, 'Beta'));
+    await writeFile(join(tempDir, 'note.txt'), 'not a directory');
+    await symlink(join(tempDir, 'alpha'), join(tempDir, 'alpha-link'));
+
+    server = createApiServer(createMockRouter(), {
+      port: TEST_PORT,
+      apiKey: TEST_API_KEY,
+      host: '127.0.0.1',
+    });
+    await new Promise<void>((resolve) => {
+      if (server.listening) { resolve(); return; }
+      server.once('listening', resolve);
+    });
+    port = getPort(server);
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('requires the API key', async () => {
+    const res = await request(port, 'GET', `/api/v1/filesystem/browse?path=${encodeURIComponent(tempDir)}`);
+    expect(res.status).toBe(401);
+  });
+
+  it('lists server-side child directories and omits files', async () => {
+    const res = await request(port, 'GET', `/api/v1/filesystem/browse?path=${encodeURIComponent(tempDir)}`, undefined, {
+      'x-api-key': TEST_API_KEY,
+    });
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.path).toBe(tempDir);
+    expect(body.parent).toBeTruthy();
+    expect(body.entries.map((entry: { name: string }) => entry.name)).toEqual(['alpha', 'alpha-link', 'Beta']);
+    expect(body.entries.find((entry: { name: string }) => entry.name === 'note.txt')).toBeUndefined();
+    expect(body.entries.find((entry: { name: string; isSymlink: boolean }) => entry.name === 'alpha-link')?.isSymlink).toBe(true);
+  });
+
+  it('rejects non-directory paths', async () => {
+    const filePath = join(tempDir, 'note.txt');
+    const res = await request(port, 'GET', `/api/v1/filesystem/browse?path=${encodeURIComponent(filePath)}`, undefined, {
+      'x-api-key': TEST_API_KEY,
+    });
+    expect(res.status).toBe(400);
   });
 });
 

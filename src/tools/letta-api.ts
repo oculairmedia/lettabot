@@ -829,8 +829,63 @@ export async function getAgentTools(agentId: string): Promise<Array<{
 }
 
 /**
+ * Strip any `requires_approval` entries from the agent's `tool_rules`
+ * array. This is independent of the per-tool `requires_approval` flag
+ * that `disableAllToolApprovals` toggles — Letta server checks the
+ * agent record's `tool_rules` first, and a `requires_approval` rule
+ * there pauses the run with `stop_reason='requires_approval'`
+ * regardless of what the per-tool flag says. The non-interactive
+ * SDK subprocess has nothing to approve with, so the run eventually
+ * returns `result.success=false` and the gateway's recovery loop
+ * tries (and fails) to swap conversations forever.
+ *
+ * Idempotent: if no matching rules exist, no PATCH is issued.
+ *
+ * Diagnosed against Meridian (2026-04-27): 9 `requires_approval`
+ * rules on the agent record (Read, Edit, Task, Skill, …) caused the
+ * `Conversation failed → swap → retry` loop documented in flk.5.
+ */
+export async function stripRequiresApprovalToolRules(agentId: string): Promise<void> {
+  try {
+    const client = getClient();
+    const agent = await client.agents.retrieve(agentId);
+    const rules = (agent.tool_rules ?? []) as Array<{ type?: string; tool_name?: string }>;
+    const stripped = rules.filter((r) => r.type !== 'requires_approval');
+    if (stripped.length === rules.length) return;
+
+    const removed = rules.length - stripped.length;
+    const removedNames = rules
+      .filter((r) => r.type === 'requires_approval')
+      .map((r) => r.tool_name ?? '?')
+      .join(', ');
+    log.info(
+      `Found ${removed} requires_approval tool_rule(s) on agent ${agentId.slice(0, 12)}… (${removedNames}). ` +
+      `Stripping for headless operation.`
+    );
+    // Cast: the SDK union type is huge and our filtered subset is structurally
+    // compatible with the field's array element type.
+    await client.agents.update(agentId, {
+      tool_rules: stripped as Parameters<typeof client.agents.update>[1]['tool_rules'],
+    });
+  } catch (e) {
+    log.warn(
+      `Failed to strip requires_approval tool_rules on agent ${agentId.slice(0, 12)}…:`,
+      e instanceof Error ? e.message : e,
+    );
+  }
+}
+
+/**
  * Ensure no tools on the agent require approval.
  * Call on startup to proactively prevent stuck approval states.
+ *
+ * Two server-side mechanisms can pause a run on approval; we clear
+ * both:
+ *   1. The per-tool `requires_approval` flag on the tool record.
+ *   2. The `requires_approval` entries in the agent record's
+ *      `tool_rules` array.
+ * (1) and (2) are independent — clearing one without the other still
+ * leaves the run-pause path live.
  */
 export async function ensureNoToolApprovals(agentId: string): Promise<void> {
   try {
@@ -844,6 +899,9 @@ export async function ensureNoToolApprovals(agentId: string): Promise<void> {
   } catch (e) {
     log.warn('Failed to check/disable tool approvals:', e);
   }
+  // Independent of the per-tool flag above: agent.tool_rules can also
+  // pause runs on approval. Strip any matching rules.
+  await stripRequiresApprovalToolRules(agentId);
 }
 
 /**
