@@ -724,6 +724,7 @@ async function main() {
         sessionDefaults: {
           permissionMode: 'bypassPermissions',
           memfs: false,
+          cwd: globalConfig.workingDir,
           disallowedTools: globalConfig.disallowedTools,
         },
         onConversationUpdate: gatewayConversationUpdate,
@@ -763,6 +764,14 @@ async function main() {
     stores: agentStores,
     agentChannels: agentChannelMap,
     agentConversationModes,
+    gatewayAgentDetails: wsGateway ? () => wsGateway!.listAgentLocations().map(location => ({
+      id: location.id,
+      name: location.name,
+      status: location.status,
+      conversation_id: location.conversationId,
+      current_working_directory: location.currentWorkingDirectory,
+      default_working_directory: location.defaultWorkingDirectory,
+    })) : undefined,
     sessionInvalidators,
     upgradeHandlers: wsGateway ? [wsGateway] : undefined,
     heartbeatTriggers,

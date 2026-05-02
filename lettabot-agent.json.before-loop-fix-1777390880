@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "agents": {
+    "LettaBot": {
+      "agentId": "agent-597b5756-2915-4560-ba6b-91005f085166",
+      "conversationId": "conv-c0f3798d-c954-471c-b4e6-d415e1b4e6fc",
+      "lastMessageTarget": {
+        "channel": "matrix",
+        "chatId": "!mCGHnQNcloSQCouLYz:matrix.oculair.ca",
+        "updatedAt": "2026-04-28T15:23:47.484Z"
+      },
+      "recoveryAttempts": 0,
+      "baseUrl": "http://192.168.50.90:8289",
+      "lastUsedAt": "2026-04-01T03:47:33.819Z",
+      "createdAt": "2026-04-01T03:47:33.819Z"
+    },
+    "LettaBot-triage": {
+      "agentId": "agent-2fae4a23-1caa-460d-9033-9f30ac84ed5e",
+      "lastUsedAt": "2026-04-28T15:40:11.205Z",
+      "createdAt": "2026-03-09T20:55:12.987Z",
+      "conversationId": "conv-6083fa67-f622-4f26-9191-10055d46f816",
+      "conversations": {
+        "heartbeat": "conv-fae0fd95-f276-41d6-a2fb-d491d51d8312"
+      }
+    },
+    "test-triage": {
+      "agentId": "agent-2fae4a23-1caa-460d-9033-9f30ac84ed5e",
+      "lastUsedAt": "2026-03-10T00:02:39.361Z",
+      "createdAt": "2026-03-10T00:02:39.361Z"
+    }
+  }
+}

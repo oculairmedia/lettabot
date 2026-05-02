@@ -12,7 +12,7 @@ import type { IncomingMessage } from 'http';
 import type { Duplex } from 'stream';
 import crypto from 'crypto';
 import { validateApiKey } from './auth.js';
-import { AgentSessionManager, SessionBusyError } from './agent-session-manager.js';
+import { AgentSessionManager, SessionBusyError, ConversationNotResumableError } from './agent-session-manager.js';
 import type { SDKMessage, SendMessage, MessageContentItem } from '@letta-ai/letta-code-sdk';
 import { createLogger } from '../logger.js';
 import { maybeGenerateConversationTitle } from '../services/conversation-title.js';
@@ -97,6 +97,14 @@ const ErrorCode = {
   SESSION_BUSY: 'SESSION_BUSY',
   SESSION_INIT_FAILED: 'SESSION_INIT_FAILED',
   STREAM_ERROR: 'STREAM_ERROR',
+  /**
+   * letta-mobile-c87t.2: caller asked to resume a specific conversation_id
+   * but the underlying SDK silently allocated a new conversation instead
+   * (the prior conv was unknown to the letta-code CLI). The gateway refused
+   * the substitution; clients should offer the user an explicit choice to
+   * start fresh (with `force_new`) rather than be silently migrated.
+   */
+  CONVERSATION_NOT_RESUMABLE: 'CONVERSATION_NOT_RESUMABLE',
 } as const;
 
 /**
@@ -332,6 +340,11 @@ export class WsGateway {
   /** List all agent IDs tracked in the gateway conversation store */
   listTrackedAgentIds(): string[] {
     return this.sessions.listTrackedAgentIds();
+  }
+
+  /** Client-mode agent cwd/default-path metadata for HTTP status clients. */
+  listAgentLocations(): ReturnType<AgentSessionManager['listAgentLocations']> {
+    return this.sessions.listAgentLocations();
   }
 
   /** Remove orphaned agents from the gateway conversation store */
@@ -571,6 +584,15 @@ export class WsGateway {
         session_id: init.sessionId,
       });
     } catch (err) {
+      // letta-mobile-c87t.2: surface the resume-substitution refusal with
+      // a typed code so clients can offer "start fresh" UX instead of a
+      // generic init failure. Note: the connection stays open — the client
+      // is expected to follow up with `session_start { force_new: true }`
+      // (or just back out) rather than tear down the WS.
+      if (err instanceof ConversationNotResumableError) {
+        this.sendError(ws, ErrorCode.CONVERSATION_NOT_RESUMABLE, err.message);
+        return;
+      }
       this.sendError(ws, ErrorCode.SESSION_INIT_FAILED, String(err));
     }
   }

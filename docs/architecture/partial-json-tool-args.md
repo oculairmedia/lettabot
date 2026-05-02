@@ -1,12 +1,12 @@
 # Streaming partial JSON for tool_call arguments
 
-**Status:** Proposed
+**Status:** Implemented (uww epic + pgs opt-in gate)
 **Date:** 2026-04-26
 **Author:** PM - letta-mobile (Letta Code) + Emmanuel
-**Related:** `bot-stream-coalescer.md`, paseo deep dive
-**Bead epic:** `lb-pjsn` (lettabot)
+**Related:** `bot-stream-coalescer.md`, paseo deep dive, `../channel-adapter-contract.md`
+**Bead epics:** `lettabot-uww` (parser + emitter), `lettabot-pgs` (per-connection opt-in)
 
-> **Reading this to write a channel adapter or WS client?** The user-facing wire contract — including the `status` field semantics — is in [`docs/channel-adapter-contract.md`](../channel-adapter-contract.md). This doc is internal design rationale for the server-side parser + emitter.
+> **Reading this to write a channel adapter or WS client?** The user-facing wire contract — including the `status` field semantics and the `?progressive_tool_calls=1` opt-in — is in [`docs/channel-adapter-contract.md`](../channel-adapter-contract.md). This doc is internal design rationale for the server-side parser + emitter.
 
 ## Context
 
@@ -175,10 +175,11 @@ Same shape as coalescer:
 1. ✅ Land parser + integration behind `LETTABOT_PARTIAL_JSON_ENABLED=false` (`lettabot-uww.1`–`.4`).
 2. ✅ Bake on Emmanuel's daemon — mobile UI verified on Pixel 2XL (`lettabot-uww.5`, 2026-04-26).
 3. ✅ Default-on, kill switch retained for two releases (`lettabot-uww.6`).
+4. ✅ Move from "always-on, all clients see snapshots" to **per-connection opt-in** via `?progressive_tool_calls=1` query param (`lettabot-pgs.1`–`.4`). The dedup-by-`tool_call_id` rule moves from a baseline contract requirement to an opt-in obligation; non-opted-in clients see exactly one `tool_call` frame per call. See [Channel Adapter Contract](../channel-adapter-contract.md) for the wire-facing version.
 
-Cleanup (kill-switch removal + dead legacy single-frame path) is scheduled for two release cycles after step 3, tracked by the follow-up bead filed alongside `uww.6`.
+The `LETTABOT_PARTIAL_JSON_ENABLED` env var stays as the server-wide blast-radius switch; there is no cleanup bead to remove the legacy single-frame path because it became the default contract for non-opted-in clients in step 4.
 
-Order matters: **coalescer first** (otherwise progressive snapshots inflate frame count). The coalescer flipped on in `lettabot-aie.6` (commit `f3632ff`); partial-JSON flipped on in `uww.6`.
+Order matters: **coalescer first** (otherwise progressive snapshots inflate frame count). The coalescer flipped on in `lettabot-aie.6` (commit `f3632ff`); partial-JSON flipped on in `uww.6`; opt-in gate landed in `pgs`.
 
 ---
 

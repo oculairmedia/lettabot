@@ -54,6 +54,8 @@ export interface ManagedSession {
   state: SessionState;
   lastActivity: number;
   initMessage: SDKInitMessage | null;
+  /** Working directory used to launch this SDK subprocess. */
+  cwd?: string;
   /** Set when abort() interrupts the current run — prevents conversation recovery on result.success=false */
   aborted?: boolean;
 }
@@ -531,6 +533,7 @@ export class AgentSessionManager {
       state: 'initializing',
       lastActivity: Date.now(),
       initMessage: null,
+      cwd: opts.cwd,
     };
 
     pool.agents.set(agentId, managed);
@@ -538,6 +541,43 @@ export class AgentSessionManager {
 
     try {
       const initMsg = await withTimeout(session.initialize(), INIT_TIMEOUT_MS);
+
+      // letta-mobile-c87t.2: silent-resume guard.
+      //
+      // The SDK's `resumeSession(convId)` does not fail when `convId` is
+      // unknown — the underlying letta-code CLI silently allocates a fresh
+      // conversation and reports the new id back via the init message. The
+      // SDKInitMessage has no `resumed: boolean` field, so the only way to
+      // detect substitution is to compare the requested id against the
+      // returned id.
+      //
+      // Refuse the substitution **only when the caller explicitly asked
+      // for a specific conversation_id and did not opt into force_new.**
+      // The auto-resume-from-store path (line ~567 below) intentionally
+      // passes `effectiveConversationId` from the persistent store while
+      // keeping `conversationId` undefined — that path's recovery is the
+      // existing recursive retry, and we leave it untouched.
+      if (
+        conversationId &&
+        !forceNew &&
+        initMsg.conversationId &&
+        initMsg.conversationId !== conversationId
+      ) {
+        log.warn(
+          `Refusing silent conversation substitution: requested ` +
+          `${conversationId.slice(0, 12)}... but SDK allocated ` +
+          `${initMsg.conversationId.slice(0, 12)}...`,
+        );
+        // Reap the substituted SDK subprocess and remove the pool entry.
+        // Do NOT persist the substituted id — the caller will decide
+        // whether to retry with force_new (creating a fresh conv on
+        // purpose) or back out.
+        this.safeCloseSession(session);
+        pool.agents.delete(agentId);
+        if (pool.activeAgentId === agentId) pool.activeAgentId = null;
+        throw new ConversationNotResumableError(conversationId, initMsg.conversationId);
+      }
+
       managed.state = 'ready';
       managed.conversationId = initMsg.conversationId;
       managed.initMessage = initMsg;
@@ -1005,6 +1045,60 @@ export class AgentSessionManager {
     return this.conversationStore.listAgentIds();
   }
 
+  /**
+   * Client-mode filesystem location metadata for status endpoints.
+   *
+   * The path concept belongs to the letta-code SDK subprocess owned by the
+   * WS gateway, not to generic channel bots. Active sessions report their
+   * launch cwd as the current working directory; tracked-but-idle agents expose
+   * it as the default/start location so clients can avoid an "unknown" state
+   * before a socket has opened.
+   */
+  listAgentLocations(): Array<{
+    id: string;
+    name: string;
+    status: SessionState | 'tracked';
+    conversationId: string | null;
+    currentWorkingDirectory?: string;
+    defaultWorkingDirectory?: string;
+  }> {
+    const byAgent = new Map<string, {
+      id: string;
+      name: string;
+      status: SessionState | 'tracked';
+      conversationId: string | null;
+      currentWorkingDirectory?: string;
+      defaultWorkingDirectory?: string;
+    }>();
+    const defaultWorkingDirectory = this.sessionDefaults.cwd;
+
+    for (const pool of this.pools.values()) {
+      for (const [agentId, managed] of pool.agents) {
+        byAgent.set(agentId, {
+          id: agentId,
+          name: agentId,
+          status: managed.state,
+          conversationId: managed.conversationId,
+          currentWorkingDirectory: managed.cwd ?? defaultWorkingDirectory,
+          defaultWorkingDirectory: managed.cwd ?? defaultWorkingDirectory,
+        });
+      }
+    }
+
+    for (const agentId of this.conversationStore.listAgentIds()) {
+      if (byAgent.has(agentId)) continue;
+      byAgent.set(agentId, {
+        id: agentId,
+        name: agentId,
+        status: 'tracked',
+        conversationId: this.conversationStore.get(agentId),
+        defaultWorkingDirectory,
+      });
+    }
+
+    return [...byAgent.values()];
+  }
+
   /** Remove agent entries from the conversation store. Returns removed IDs. */
   removeOrphanedAgents(agentIds: string[]): string[] {
     return this.conversationStore.removeAgents(agentIds);
@@ -1079,6 +1173,34 @@ export class SessionBusyError extends Error {
   constructor() {
     super('Session is busy processing another request');
     this.name = 'SessionBusyError';
+  }
+}
+
+/**
+ * Thrown by `_openLocked` when a caller asks to resume a specific
+ * `conversation_id` and the SDK silently allocates a different one
+ * instead. The underlying `letta-code` CLI does not surface a
+ * "conversation not found" error — when given an unknown conversation
+ * id it just creates a fresh conversation and reports the new id back
+ * via the init message. Trusting that result silently moves the user
+ * to a new conversation; the agent has no memory of the prior one.
+ *
+ * Surfacing this as a typed error lets the gateway send a typed wire
+ * code (CONVERSATION_NOT_RESUMABLE) so clients can offer an explicit
+ * "start fresh" action instead of a silent migration.
+ *
+ * See plan: 2026-04-clientmode-prevent-silent-conversation-swap.md.
+ */
+export class ConversationNotResumableError extends Error {
+  constructor(
+    public readonly requestedConversationId: string,
+    public readonly substituteConversationId: string,
+  ) {
+    super(
+      `Requested conversation ${requestedConversationId} is no longer resumable; ` +
+      `SDK allocated ${substituteConversationId} instead`,
+    );
+    this.name = 'ConversationNotResumableError';
   }
 }
 

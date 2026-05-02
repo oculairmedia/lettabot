@@ -1081,60 +1081,83 @@ leaving coalescing as the only behaviour.
 
 ### WS Gateway Partial-JSON tool_call snapshots
 
-The WS gateway renders tool_call argument streams progressively —
+The WS gateway can render tool_call argument streams progressively —
 emitting a fresh `tool_call` snapshot each time the streaming JSON
-buffer parses to a structurally-distinct value. Clients see tool
-card text grow in real time (e.g. `file_path` appears, then
+buffer parses to a structurally-distinct value. Opted-in clients see
+tool card text grow in real time (e.g. `file_path` appears, then
 `content` starts streaming) instead of a "thinking…" placeholder
 until the full JSON is received.
 
-Progressive snapshots are **enabled by default** as of this release.
-Set `LETTABOT_PARTIAL_JSON_ENABLED=0` (or `=false`) to disable as a
-kill switch if a regression is observed.
+Progressive snapshots are **opt-in per WS connection**. By default,
+every client sees exactly one `tool_call` frame per call with the
+fully-resolved arguments (and `status: 'completed'` when the
+server-side machinery is on, no `status` field when it's off). To
+enable progressive snapshots on a connection, append the query
+parameter to the WS URL:
+
+```
+wss://your-host/api/v1/agent-gateway?progressive_tool_calls=1
+```
+
+The opt-in flips the gateway from "drop running snapshots, only emit
+the final" to "emit every structurally-distinct snapshot during
+streaming." Opted-in clients must dedup by `tool_call_id` (latest
+snapshot wins); see [Channel Adapter Contract §4](./channel-adapter-contract.md#4-opt-in-progressive-tool_call-snapshots)
+for the full wire contract.
+
+The server-wide knob below stays as a kill switch — when off, no
+progressive snapshots are produced even for opted-in connections.
 
 | Env Variable | Type | Default | Description |
 |--------------|------|---------|-------------|
-| `LETTABOT_PARTIAL_JSON_ENABLED` | `0` \| `1` \| `false` \| `true` | `true` (on) | When enabled, the gateway emits one `tool_call` frame per parse-extension during streaming with `status='running'`, plus a terminal frame on type boundary with `status='completed'`. Snapshots are deduped by structural deep equality on the parsed value, and the BotStreamCoalescer's replace-by-id rule absorbs the per-byte snapshot noise on the wire. Set to `0` or `false` to revert to a single `tool_call` frame per call with the fully accumulated args (legacy behavior). |
+| `LETTABOT_PARTIAL_JSON_ENABLED` | `0` \| `1` \| `false` \| `true` | `true` (on) | When enabled, the gateway runs the partial-JSON snapshot emitter and feeds progressive snapshots to opted-in connections. Non-opted-in connections still see exactly one `tool_call` frame per call (the terminal `completed` snapshot, with `running` snapshots dropped before the wire). Set to `0` or `false` to disable the partial-JSON pipeline entirely — every connection then sees a single `tool_call` frame per call with no `status` field (legacy behaviour). |
+
+| Connection Param | Type | Default | Description |
+|------------------|------|---------|-------------|
+| `progressive_tool_calls` | `0` \| `1` | `0` (off) | Per-WS-connection opt-in for progressive `tool_call` snapshots. When `1`, this connection receives every structurally-distinct snapshot during streaming (`status='running'`) plus a terminal frame (`status='completed'`). Default `0` means this connection sees one `tool_call` frame per call. Adapters that want progressive UX must also implement dedup-by-`tool_call_id`. |
 
 **Wire shape:**
 
-The `tool_call` frame gains an optional `status` field
-(`'running' | 'completed'`). It is **wire-additive** — clients that
-ignore unknown fields continue to work unchanged. Clients that want
-to render progressive tool cards key off `status` to know when the
-final args have arrived.
+For non-opted-in connections, the `tool_call` frame is emitted once
+per call with the final args. The `status` field is `'completed'`
+when `LETTABOT_PARTIAL_JSON_ENABLED=true` and absent otherwise.
+
+For opted-in connections, the `tool_call` frame is emitted on every
+parse-extension with `status='running'` and finally with
+`status='completed'`. Snapshots are deduped server-side by
+structural deep equality on the parsed value, and the
+`BotStreamCoalescer`'s replace-by-id rule absorbs the per-byte
+snapshot noise on the wire.
 
 If you are writing a channel adapter or a WS-gateway client, see
 [Channel Adapter Contract](./channel-adapter-contract.md) for the
-full snapshot-and-dedup wire contract (with renderer pseudocode and
-common pitfalls). Treating `tool_call` frames as deltas instead of
-snapshots is the most common adapter bug and produces N duplicate
-tool cards per call.
+full wire contract (default and progressive paths, renderer
+pseudocode, common pitfalls).
 
 **Coalescer composition:**
 
 With `LETTABOT_COALESCE_ENABLED` also on (the default), the
-coalescer's per-id replace rule means the wire only sees the
-*latest* running snapshot per coalesce window plus the terminal
-completed frame. This keeps frame counts bounded even on long
-argument streams.
+coalescer's per-id replace rule means opted-in connections only
+see the *latest* running snapshot per coalesce window plus the
+terminal completed frame. This keeps frame counts bounded even on
+long argument streams.
 
 **Mobile compatibility:**
 
-letta-mobile UI was verified against progressive snapshots on Pixel
-2XL during `lettabot-uww.5` (manual verification, 2026-04-26 14:31
-EDT). Older mobile builds that ignore the `status` field still
-function correctly because the field is wire-additive — they will
-just render the latest snapshot on each frame, equivalent to the
-pre-flag legacy behaviour but with intermediate updates.
+letta-mobile opts in via `?progressive_tool_calls=1` on its WS URL.
+The progressive UI was verified on Pixel 2XL during `lettabot-uww.5`
+(manual verification, 2026-04-26 14:31 EDT). Pre-opt-in mobile
+builds simply receive the default one-frame-per-call shape and
+render correctly without dedup — the opt-in is the only switch that
+turns on progressive UX.
 
 **Kill-switch retention:**
 
-The kill switch remains in tree for **two release cycles** following
-this default-on flip. After that, the env var handling and the
-legacy single-frame fallback path are removed in the cleanup bead
-filed alongside this change, leaving progressive snapshots as the
-only behaviour.
+The `LETTABOT_PARTIAL_JSON_ENABLED` kill switch remains in tree as
+the server-wide blast-radius control. The per-connection opt-in is
+the steady-state contract going forward; no further cleanup bead
+removes the legacy single-frame path because it's now the default
+for non-opted-in clients.
 
 ### OpenAI-Compatible Endpoint
 

@@ -35,6 +35,7 @@ import type {
 
 import { WsGateway } from './ws-gateway.js';
 import type { AgentSessionManager } from './agent-session-manager.js';
+import { ConversationNotResumableError } from './agent-session-manager.js';
 
 // --- fake session manager ---------------------------------------------------
 
@@ -1303,6 +1304,156 @@ describe('ws-gateway hardening: heartbeat reaper + idle timeout', () => {
   });
 });
 
+// --- ws hardening: NO_SESSION after idle eviction (lettabot-wsh.5) -------
+//
+// Parallel proof for the client-side fix in WsBotClient:
+// `transparently recovers from NO_SESSION mid-flight (idle-eviction)`.
+//
+// Contract under test: after the AgentSessionManager idle sweep evicts a
+// session (5-min idle timer in prod), the SAME socket stays open and the
+// gateway emits a structured `error` frame with code=NO_SESSION on the
+// next client `message`, tagged with that message's request_id. The
+// client recovery path keys off both invariants (same socket, original
+// request_id), so a regression in either direction would silently break
+// the transparent recovery.
+//
+// We simulate eviction by deleting the connection from the fake's
+// `opened` map (same effect as `removeFromPool` in the real manager:
+// `sessions.has(connId)` flips to false).
+
+describe('ws-gateway hardening: NO_SESSION after idle eviction (lettabot-wsh.5)', () => {
+  it('emits NO_SESSION (with original request_id) on the same socket after eviction', async () => {
+    const ctx = await startHarness({ coalesce: false, partialJson: false });
+    try {
+      const ws = await connectClient(ctx);
+
+      const frames: ServerFrame[] = [];
+      ws.on('message', (data) => frames.push(JSON.parse(String(data)) as ServerFrame));
+
+      // --- Turn 1: normal end-to-end stream ------------------------------
+      ws.send(JSON.stringify({ type: 'session_start', agent_id: 'agent-evict-1' }));
+      await waitFor(frames, (f) => f.type === 'session_init');
+
+      const opened = (ctx.fake as unknown as { opened: Map<string, unknown> }).opened;
+      const connIds = Array.from(opened.keys());
+      expect(connIds).toHaveLength(1);
+      const connId = connIds[0]!;
+
+      ctx.fake.queueScript(connId, [
+        { type: 'assistant', content: 'turn-1-reply', uuid: 'u-1' } as unknown as SDKMessage,
+        { type: 'result', success: true, durationMs: 1, conversationId: null } as SDKResultMessage,
+      ]);
+      ws.send(JSON.stringify({ type: 'message', content: 'hi-1', request_id: 'req-A' }));
+      await waitFor(frames, (f) => f.type === 'result');
+
+      // Snapshot socket state mid-test: the gateway must NOT close the
+      // connection on idle eviction — the whole point of the recovery
+      // contract is that the client re-handshakes on the SAME socket.
+      const initialConnectionCount = ctx.gateway.connectionCount;
+      expect(initialConnectionCount).toBe(1);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+
+      // --- Simulate idle eviction (5-min sweep in prod) ------------------
+      // This mirrors `AgentSessionManager.removeFromPool`: after the sweep
+      // evicts the session, `sessions.has(connId)` returns false so the
+      // gateway's NO_SESSION guard in handleClientMessage trips on the
+      // next client frame.
+      opened.delete(connId);
+
+      const framesBeforeTurn2 = frames.length;
+
+      // --- Turn 2: client (unaware of eviction) sends another message ----
+      // In the real flow the client will react to this NO_SESSION by
+      // re-handshaking on the same socket and resending the same
+      // request_id. Here we just assert the gateway side of that
+      // contract: structured error, original request_id, socket open.
+      ws.send(JSON.stringify({ type: 'message', content: 'hi-2', request_id: 'req-B' }));
+
+      await waitUntil(() => frames.slice(framesBeforeTurn2).some((f) => f.type === 'error'));
+
+      const errorFrame = frames.slice(framesBeforeTurn2).find((f) => f.type === 'error');
+      expect(errorFrame).toBeDefined();
+      expect(errorFrame!.code).toBe('NO_SESSION');
+      expect(errorFrame!.request_id).toBe('req-B');
+
+      // Same socket, no churn: the client's recovery path depends on
+      // being able to re-handshake here without reconnecting.
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      expect(ctx.gateway.connectionCount).toBe(initialConnectionCount);
+
+      ws.close();
+      await new Promise<void>((r) => ws.once('close', () => r()));
+    } finally {
+      await ctx.stop();
+    }
+  });
+
+  it('honors a fresh session_start on the same socket after a NO_SESSION error', async () => {
+    // The mirror invariant: after the gateway emits NO_SESSION, a
+    // subsequent session_start on the SAME socket must succeed (this is
+    // exactly what `WsBotClient.initializeSessionLocked` relies on
+    // during transparent recovery). Without this guarantee the client
+    // would have to tear down the socket and re-auth — which is
+    // precisely what the wsh.5 fix avoids.
+    const ctx = await startHarness({ coalesce: false, partialJson: false });
+    try {
+      const ws = await connectClient(ctx);
+
+      const frames: ServerFrame[] = [];
+      ws.on('message', (data) => frames.push(JSON.parse(String(data)) as ServerFrame));
+
+      // Turn 1
+      ws.send(JSON.stringify({ type: 'session_start', agent_id: 'agent-evict-2' }));
+      await waitFor(frames, (f) => f.type === 'session_init');
+
+      const opened = (ctx.fake as unknown as { opened: Map<string, unknown> }).opened;
+      const connId = Array.from(opened.keys())[0]!;
+      ctx.fake.queueScript(connId, [
+        { type: 'result', success: true, durationMs: 1, conversationId: null } as SDKResultMessage,
+      ]);
+      ws.send(JSON.stringify({ type: 'message', content: 'hi-1', request_id: 'req-A' }));
+      await waitFor(frames, (f) => f.type === 'result');
+
+      // Evict, expect NO_SESSION on next message
+      opened.delete(connId);
+      const beforeErr = frames.length;
+      ws.send(JSON.stringify({ type: 'message', content: 'hi-2', request_id: 'req-B' }));
+      await waitUntil(() =>
+        frames.slice(beforeErr).some((f) => f.type === 'error' && (f as ServerFrame).code === 'NO_SESSION'),
+      );
+
+      // Recovery handshake on the SAME socket
+      const beforeReinit = frames.length;
+      ws.send(JSON.stringify({ type: 'session_start', agent_id: 'agent-evict-2' }));
+      await waitUntil(() => frames.slice(beforeReinit).some((f) => f.type === 'session_init'));
+
+      // The fake creates a fresh connection-pool entry on `open`, so
+      // we re-grab the connId and queue a script for the resend.
+      const connId2 = Array.from(opened.keys())[0]!;
+      ctx.fake.queueScript(connId2, [
+        { type: 'assistant', content: 'turn-2-reply', uuid: 'u-2' } as unknown as SDKMessage,
+        { type: 'result', success: true, durationMs: 1, conversationId: null } as SDKResultMessage,
+      ]);
+
+      const beforeResend = frames.length;
+      // Client resends the SAME request_id — this is the critical part
+      // of the contract: dup-detection must accept the resend without
+      // double-billing or rejecting it.
+      ws.send(JSON.stringify({ type: 'message', content: 'hi-2', request_id: 'req-B' }));
+      await waitUntil(() => frames.slice(beforeResend).some((f) => f.type === 'result'));
+
+      // Single socket throughout
+      expect(ctx.gateway.connectionCount).toBe(1);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+
+      ws.close();
+      await new Promise<void>((r) => ws.once('close', () => r()));
+    } finally {
+      await ctx.stop();
+    }
+  });
+});
+
 // --- ws hardening: per-connId mutex + busy-reject (lettabot-wsh.2) -------
 //
 // Race repro: a client sends `session_start` (agent B) while a `message`
@@ -1883,6 +2034,123 @@ describe('ws-gateway protocol v2: conversation_id-driven session_start (w2hx.2)'
       expect(realConvId).toBeTruthy();
 
       ws.close();
+    } finally {
+      await ctx.stop();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// letta-mobile-c87t.2: gateway surfaces CONVERSATION_NOT_RESUMABLE on
+// silent-resume substitution. The session manager throws
+// ConversationNotResumableError; the gateway must map that to a typed
+// error frame and keep the WS open so the client can follow up with
+// `session_start { force_new: true }` (start fresh) or back out.
+// ---------------------------------------------------------------------------
+
+describe('ws-gateway e2e: CONVERSATION_NOT_RESUMABLE (c87t.2)', () => {
+  /**
+   * Drop-in subclass of FakeAgentSessionManager that throws the typed
+   * resume-substitution error from `open()` whenever a conversation_id
+   * is supplied. Mirrors the production behavior added to
+   * AgentSessionManager._openLocked.
+   */
+  class RefuseResumeSessionManager extends FakeAgentSessionManager {
+    constructor(
+      private readonly substituteConv: string = 'conv-substitute',
+    ) {
+      super();
+    }
+    async open(
+      connectionId: string,
+      agentId: string,
+      conversationId?: string,
+    ): Promise<SDKInitMessage> {
+      if (conversationId) {
+        throw new ConversationNotResumableError(conversationId, this.substituteConv);
+      }
+      return super.open(connectionId, agentId, conversationId);
+    }
+  }
+
+  async function startCustomHarness(
+    fake: FakeAgentSessionManager,
+  ): Promise<HarnessCtx> {
+    const apiKey = 'test-api-key';
+    const gateway = new WsGateway({
+      apiKey,
+      sessionManager: fake as unknown as AgentSessionManager,
+      pingIntervalMs: 60_000,
+      idleTimeoutMs: 60_000,
+    });
+    const server = createServer();
+    server.on('upgrade', (req, socket, head) => {
+      const handled = gateway.handleUpgrade(req, socket, head);
+      if (!handled) socket.destroy();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    const stop = async () => {
+      await gateway.shutdown();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    };
+    return { port, apiKey, fake, gateway, server, stop };
+  }
+
+  async function readNextFrame(ws: WebSocket): Promise<ServerFrame> {
+    return await new Promise<ServerFrame>((resolve, reject) => {
+      const onMsg = (data: unknown) => {
+        ws.off('message', onMsg as never);
+        try { resolve(JSON.parse(String(data)) as ServerFrame); }
+        catch (e) { reject(e); }
+      };
+      ws.on('message', onMsg);
+      ws.once('error', reject);
+    });
+  }
+
+  it('T4: session_start with non-existent conversation_id receives CONVERSATION_NOT_RESUMABLE error and socket stays open', async () => {
+    const fake = new RefuseResumeSessionManager('conv-substitute-x');
+    const ctx = await startCustomHarness(fake);
+    try {
+      const ws = await connectClient(ctx);
+      try {
+        // Ask to resume a conversation the SDK can't recover.
+        ws.send(JSON.stringify({
+          type: 'session_start',
+          agent_id: 'agent-test-1',
+          conversation_id: 'conv-gone',
+        }));
+
+        const errFrame = await readNextFrame(ws);
+        expect(errFrame.type).toBe('error');
+        expect(errFrame.code).toBe('CONVERSATION_NOT_RESUMABLE');
+        expect(String(errFrame.message)).toMatch(/conv-gone/);
+        expect(String(errFrame.message)).toMatch(/conv-substitute-x/);
+
+        // The socket must stay open so the client can retry with force_new.
+        // Probe by sending a follow-up session_start (no conversation_id —
+        // the fake's open() now succeeds) and assert we get session_init.
+        ws.send(JSON.stringify({
+          type: 'session_start',
+          agent_id: 'agent-test-1',
+          force_new: true,
+        }));
+
+        // Re-issue session_start without conversation_id so the fake's
+        // base open() accepts it and replies with session_init.
+        ws.send(JSON.stringify({
+          type: 'session_start',
+          agent_id: 'agent-test-1',
+        }));
+        const initFrame = await readNextFrame(ws);
+        // The first force_new attempt also goes through the fake's
+        // base open() (no conversation_id passed) and yields session_init.
+        // Either of the two follow-ups producing session_init is fine.
+        expect(initFrame.type).toBe('session_init');
+      } finally {
+        ws.close();
+      }
     } finally {
       await ctx.stop();
     }
